@@ -14,6 +14,7 @@ from config import Config
 from core.executor import TradeExecutor
 from core.scanner import BackgroundScanner
 from core.signal import SignalEngine
+from utils.models import Side
 
 templates = Jinja2Templates(directory="templates")
 scanner: BackgroundScanner | None = None
@@ -78,14 +79,28 @@ async def api_state():
 @app.get("/api/signals")
 async def api_signals():
     snap = scanner.get_snapshot()
-    return JSONResponse(_jsonify(snap.signals))
+    signals_raw = _jsonify(snap.signals)
+    for raw, sig in zip(signals_raw, snap.signals):
+        tok = (
+            sig.market.yes_token
+            if sig.recommended_side == Side.YES
+            else sig.market.no_token
+        )
+        raw["recommended_outcome"] = (
+            tok.outcome
+            if tok and tok.outcome.lower() not in ("yes", "no", "1", "0", "")
+            else sig.recommended_side.value
+        )
+    return JSONResponse(signals_raw)
 
 
 @app.get("/api/picks")
 async def api_picks():
     snap = scanner.get_snapshot()
-    picks_raw = _jsonify(snap.picks)
-    for raw, pick in zip(picks_raw, snap.picks):
+    active_picks = [p for p in snap.picks
+                    if p.market.time_category != "past" and not p.market.closed]
+    picks_raw = _jsonify(active_picks)
+    for raw, pick in zip(picks_raw, active_picks):
         raw["dominant_side"] = pick.dominant_side.value
         raw["total_traders"] = pick.num_traders_yes + pick.num_traders_no
         raw["time_category"] = pick.market.time_category
@@ -93,6 +108,21 @@ async def api_picks():
         raw["category"] = pick.category
         raw["subcategory"] = pick.subcategory
         raw["avg_dominant_win_rate"] = pick.avg_dominant_win_rate
+        dominant_tok = (
+            pick.market.yes_token
+            if pick.dominant_side == Side.YES
+            else pick.market.no_token
+        )
+        raw["recommended_price"] = (
+            round(dominant_tok.price, 4)
+            if dominant_tok and dominant_tok.price > 0
+            else None
+        )
+        raw["recommended_outcome"] = (
+            dominant_tok.outcome
+            if dominant_tok and dominant_tok.outcome.lower() not in ("yes", "no", "1", "0", "")
+            else pick.dominant_side.value
+        )
     return JSONResponse(picks_raw)
 
 

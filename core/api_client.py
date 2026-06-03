@@ -432,7 +432,8 @@ class PolymarketPublicClient:
         time_period = self._window_to_time_period(window)
         endpoints = [
             (f"{_DATA_BASE}/v1/leaderboard", {"timePeriod": time_period, "orderBy": "PNL", "limit": min(limit, 50), "offset": 0}),
-            # Note: /leaderboard/traders (legacy) returns 404 permanently — removed.
+            # Fallback: non-versioned path has lighter Cloudflare bot detection
+            (f"{_DATA_BASE}/leaderboard", {"timePeriod": time_period, "orderBy": "PNL", "limit": min(limit, 50), "offset": 0}),
         ]
         # Enough retries to try every impersonation profile at least once.
         retries_per_endpoint = len(_IMPERSONATE_PROFILES) + 1

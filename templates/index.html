@@ -135,6 +135,13 @@
                       x-text="confidencePct(pick) + '%'"></span>
               </div>
 
+              <!-- Bet price -->
+              <div class="mb-1">
+                <span class="text-xs font-bold font-mono"
+                      :class="pick.dominant_side === 'YES' ? 'text-green-400' : 'text-red-400'"
+                      x-text="'BET ' + (pick.recommended_outcome || pick.dominant_side) + (pick.recommended_price ? ' @ ' + pick.recommended_price : '')"></span>
+              </div>
+
               <!-- Footer: traders + win rate -->
               <div class="flex items-center justify-between text-xs text-gray-500">
                 <span x-text="(pick.total_traders || 0) + ' trader' + ((pick.total_traders || 0) !== 1 ? 's' : '')"></span>
@@ -272,7 +279,7 @@
                           x-text="sig.signal_type"></span>
                     <span class="text-xs font-bold px-2 py-0.5 rounded"
                           :class="sideBadgeClass(sig.recommended_side)"
-                          x-text="sig.recommended_side"></span>
+                          x-text="sig.recommended_outcome || sig.recommended_side"></span>
                     <span class="text-xs text-gray-500 font-mono" x-text="'@ ' + sig.recommended_price.toFixed(4)"></span>
                   </div>
                   <div class="text-sm text-gray-200 truncate" x-text="sig.market.question"></div>
@@ -365,6 +372,13 @@
                     </div>
                     <span class="text-xs text-gray-400 tabular-nums"
                           x-text="confidencePct(pick) + '%'"></span>
+                  </div>
+
+                  <!-- Bet price -->
+                  <div class="mb-2">
+                    <span class="text-xs font-bold font-mono"
+                          :class="pick.dominant_side === 'YES' ? 'text-green-400' : 'text-red-400'"
+                          x-text="'BET ' + (pick.recommended_outcome || pick.dominant_side) + (pick.recommended_price ? ' @ ' + pick.recommended_price : '')"></span>
                   </div>
 
                   <!-- Traders + win rate footer -->
@@ -546,6 +560,18 @@
                             : 'bg-red-950 text-red-400 border border-red-800'"
                           x-text="pick.dominant_side"></span>
                   </div>
+                </div>
+
+                <!-- Bet recommendation -->
+                <div class="mb-2">
+                  <span class="inline-flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg border"
+                        :class="pick.dominant_side === 'YES'
+                          ? 'bg-green-950 text-green-300 border-green-700'
+                          : 'bg-red-950 text-red-300 border-red-700'">
+                    <span>BET</span>
+                    <span x-text="pick.recommended_outcome || pick.dominant_side"></span>
+                    <span x-show="pick.recommended_price" class="font-mono" x-text="'@ ' + pick.recommended_price"></span>
+                  </span>
                 </div>
 
                 <!-- YES/NO weight bar -->
@@ -738,7 +764,7 @@
                           x-text="sig.signal_type"></span>
                     <span class="text-xs font-bold px-2 py-0.5 rounded"
                           :class="sideBadgeClass(sig.recommended_side)"
-                          x-text="sig.recommended_side"></span>
+                          x-text="sig.recommended_outcome || sig.recommended_side"></span>
                     <span class="text-gray-500 text-sm font-mono" x-text="'@ ' + sig.recommended_price.toFixed(4)"></span>
                   </div>
                   <div class="flex-shrink-0 text-right">

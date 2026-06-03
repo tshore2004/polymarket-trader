@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -24,6 +25,47 @@ _MAX_GAMMA_ENRICH = 60
 _MAX_OUTCOMES_PER_EVENT = 2
 
 
+def _opponent_label(question: str, held: str) -> str:
+    """For a matchup market ('Team A vs. Team B'), return the side that isn't `held`.
+
+    Returns "" when the question isn't a recognizable two-sided matchup, in which
+    case callers fall back to a generic opposite label.
+    """
+    if not question or not held:
+        return ""
+    parts = re.split(r"\s+vs\.?\s+", question, flags=re.IGNORECASE)
+    if len(parts) != 2:
+        return ""
+    a, b = parts[0].strip(), parts[1].strip()
+    h = held.strip().lower()
+    if h and h in a.lower():
+        return b
+    if h and h in b.lower():
+        return a
+    return ""
+
+
+def _named_labels(question: str, held: str) -> tuple[str, str]:
+    """Build (held_label, opposite_label) for a named (non Yes/No) outcome.
+
+    Handles over/under totals ("O/U 212.5" → "Over 212.5" / "Under 212.5"),
+    two-sided team matchups, and falls back to the raw label otherwise.
+    """
+    held = held.strip()
+    low = held.lower()
+
+    # Over/Under totals — pull the line number off the question and attach it.
+    if low in ("over", "under", "o", "u"):
+        m = re.search(r"(\d+(?:\.\d+)?)", question or "")
+        line = f" {m.group(1)}" if m else ""
+        over_lbl, under_lbl = f"Over{line}".strip(), f"Under{line}".strip()
+        return (over_lbl, under_lbl) if low.startswith("o") else (under_lbl, over_lbl)
+
+    # Team / named matchup.
+    opp = _opponent_label(question, held)
+    return held, (opp or "Other")
+
+
 def _event_key(market: Market) -> str:
     """Group key for deduplication. Prefers API eventSlug; falls back to question tail."""
     if market.event_slug:
@@ -42,11 +84,21 @@ def _market_from_position(pos: TraderPosition) -> "Market | None":
     """
     if not pos.market_id or not pos.title:
         return None
-    held_outcome = pos.outcome or "Yes"
-    is_yes = held_outcome.lower() in ("yes", "1")
-    held_tok = Token(token_id=pos.token_id or "", outcome=("Yes" if is_yes else "No"),
+    held_outcome = (pos.outcome or "Yes").strip()
+    low = held_outcome.lower()
+    is_yes = low in ("yes", "1")
+    # Named outcomes (e.g. "Cleveland Guardians") carry the real pick label; only
+    # genuine binary markets use "Yes"/"No". Preserve the named label so the UI can
+    # show the team/pick instead of falling back to YES/NO.
+    is_named = low not in ("yes", "no", "1", "0", "")
+    if is_named:
+        held_label, other_label = _named_labels(pos.title, held_outcome)
+    else:
+        held_label = "Yes" if is_yes else "No"
+        other_label = "No" if is_yes else "Yes"
+    held_tok = Token(token_id=pos.token_id or "", outcome=held_label,
                      price=pos.cur_price or 0.0)
-    other_tok = Token(token_id=pos.opposite_token_id or "", outcome=("No" if is_yes else "Yes"))
+    other_tok = Token(token_id=pos.opposite_token_id or "", outcome=other_label)
     tokens = [held_tok, other_tok] if is_yes else [other_tok, held_tok]
 
     # If the position payload carries an end_date that's already past, mark the
@@ -138,17 +190,24 @@ class LeaderboardAnalyzer:
 
     def refresh(self) -> None:
         logger.info("Refreshing leaderboard...")
-        self._traders = self._client.get_leaderboard(
+        new_traders = self._client.get_leaderboard(
             window=self._config.leaderboard_window,
             limit=self._config.leaderboard_top_n * 2,
             min_profit=self._config.leaderboard_min_profit,
             min_volume=self._config.leaderboard_min_volume,
         )[: self._config.leaderboard_top_n]
 
-        if not self._traders:
-            logger.warning("Leaderboard returned no traders.")
-            return
+        if not new_traders:
+            if self._traders:
+                logger.warning(
+                    "Leaderboard fetch failed — reusing %d cached traders from previous scan.",
+                    len(self._traders),
+                )
+            else:
+                logger.warning("Leaderboard returned no traders.")
+            return  # Keep existing self._traders / self._positions intact
 
+        self._traders = new_traders
         logger.info("Fetching positions for %d top traders...", len(self._traders))
         self._positions = self._fetch_all_positions(self._traders)
         self._extra_markets = {}
