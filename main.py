@@ -16,7 +16,7 @@ from core.executor import TradeExecutor
 from utils.display import (
     show_banner, show_scan_status, show_balance, show_mode_menu,
     show_run_mode_menu, show_daily_report, show_event_library,
-    show_event_detail, show_signal, prompt_trade,
+    show_event_detail, show_signal, prompt_trade, show_starred_traders,
 )
 
 logging.basicConfig(
@@ -104,16 +104,37 @@ def _run_daily_report(
         return
 
     # Offer to execute top picks
-    console.print("\n[bold]Want to execute any of these picks?[/bold]")
-    while True:
-        raw = console.input(
-            "[yellow]Enter pick # to execute, 'all' for top 5, or 'q' to quit:[/yellow] > "
-        ).strip().lower()
+    console.print("\n[bold]Commands:[/bold]")
+    console.print("  [dim]#        Execute pick by number[/dim]")
+    console.print("  [dim]all      Execute top 5[/dim]")
+    console.print("  [dim]star #   Star the traders backing pick #[/dim]")
+    console.print("  [dim]stars    View starred traders & positions[/dim]")
+    console.print("  [dim]q        Quit[/dim]")
 
-        if raw in ("q", "quit", ""):
+    while True:
+        raw = console.input("[yellow]> [/yellow]").strip()
+        raw_lower = raw.lower()
+
+        if raw_lower in ("q", "quit", ""):
             break
 
-        if raw == "all":
+        if raw_lower == "stars":
+            show_starred_traders(console, engine._lb.traders, engine._lb._positions)
+            continue
+
+        if raw_lower.startswith("star "):
+            _handle_star_command(console, raw, signals, engine)
+            continue
+
+        if raw_lower.startswith("unstar "):
+            addr = raw[7:].strip()
+            if engine._lb.starred.unstar(addr):
+                console.print(f"[dim]Unstarred {addr[:12]}...[/dim]")
+            else:
+                console.print("[dim]Address not found in starred list.[/dim]")
+            continue
+
+        if raw_lower == "all":
             for sig in signals[:5]:
                 confirmed = executor.present(console, sig, signals.index(sig) + 1)
                 if confirmed is None:
@@ -134,9 +155,32 @@ def _run_daily_report(
             else:
                 console.print("[dim]Invalid pick number.[/dim]")
         except ValueError:
-            console.print("[dim]Enter a number, 'all', or 'q'.[/dim]")
+            console.print("[dim]Enter a number, 'all', 'star #', 'stars', or 'q'.[/dim]")
 
     console.print("\n[bold yellow]Done. Goodbye.[/bold yellow]")
+
+
+def _handle_star_command(console: Console, raw: str, signals: list, engine: SignalEngine) -> None:
+    """Star all traders backing a specific pick number."""
+    try:
+        pick_num = int(raw.split()[1]) - 1
+        if 0 <= pick_num < len(signals):
+            sig = signals[pick_num]
+            if sig.consensus:
+                starred_count = 0
+                for t in sig.consensus.traders:
+                    engine._lb.starred.star(t.address, t.name)
+                    starred_count += 1
+                console.print(
+                    f"[bright_green]Starred {starred_count} trader(s) "
+                    f"from pick #{pick_num+1}[/bright_green]"
+                )
+            else:
+                console.print("[dim]No trader data for this pick.[/dim]")
+        else:
+            console.print("[dim]Invalid pick number.[/dim]")
+    except (ValueError, IndexError):
+        console.print("[dim]Usage: star <pick_number>[/dim]")
 
 
 def _show_today_fallback(console: Console, engine: SignalEngine) -> None:

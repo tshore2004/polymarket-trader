@@ -35,12 +35,11 @@ class Market:
     closed: bool = False
     volume: float = 0.0
     end_date: Optional[datetime] = None
-    event_slug: str = ""          # event grouping key (e.g. "2026-world-cup")
+    event_slug: str = ""
     tags: list[str] = field(default_factory=list)
 
     @property
     def time_category(self) -> str:
-        """Returns the timing bucket for display: tonight/tomorrow/this_week/this_month/later/ongoing."""
         if self.end_date is None:
             return "ongoing"
         ed = self.end_date
@@ -61,7 +60,6 @@ class Market:
 
     @property
     def urgency_score(self) -> float:
-        """0.0–1.0 boost weight: higher for markets resolving sooner."""
         if self.end_date is None:
             return 0.0
         ed = self.end_date
@@ -71,13 +69,13 @@ class Market:
         if secs <= 0:
             return 0.0
         if secs < 86_400:
-            return 1.0   # tonight
+            return 1.0
         if secs < 172_800:
-            return 0.8   # tomorrow
+            return 0.8
         if secs < 604_800:
-            return 0.5   # this week
+            return 0.5
         if secs < 2_592_000:
-            return 0.2   # this month
+            return 0.2
         return 0.0
 
     @property
@@ -130,9 +128,82 @@ class LeaderboardTrader:
     name: str
     profit: float
     volume: float
-    num_trades: int
-    pct_positive: float
-    score: float = 0.0     # normalized 0–1 composite score
+    num_trades: int          # predictions count (distinct markets traded)
+    pct_positive: float      # win rate 0.0-1.0 from closed positions
+    score: float = 0.0       # normalized 0-1 composite score
+    starred: bool = False    # user has starred this trader for tracking
+    largest_win: float = 0.0
+    join_date: Optional[datetime] = None
+    closed_positions: int = 0
+    winning_positions: int = 0
+
+    @property
+    def profit_per_trade(self) -> float:
+        return self.profit / self.num_trades if self.num_trades > 0 else 0.0
+
+    @property
+    def consistency_grade(self) -> str:
+        """Letter grade reflecting trader quality.
+
+        Requirements for each grade:
+        - A: ≥10 closed positions AND combined ≥ 0.75
+        - B: ≥5 closed positions AND combined ≥ 0.55
+        - C: combined ≥ 0.35 (or insufficient data)
+        - D: everything else
+
+        Win rate uses actual pct_positive; only falls back to 0.5 if we
+        truly have no closed position data (closed_positions == 0).
+        """
+        import math
+        trade_score = min(1.0, math.log10(1 + self.num_trades) / math.log10(51))
+
+        # Use real win rate when we have closed position data;
+        # only default to 0.5 when there's genuinely no data.
+        if self.closed_positions >= 3:
+            wr = self.pct_positive  # trust the real rate
+        elif self.closed_positions > 0:
+            # Bayesian shrinkage toward 0.5 for tiny samples
+            wr = (self.pct_positive * self.closed_positions + 0.5 * 3) / (self.closed_positions + 3)
+        else:
+            wr = 0.5  # no data — neutral assumption
+
+        combined = 0.5 * trade_score + 0.5 * wr
+
+        # Enforce minimum closed positions for top grades
+        if combined >= 0.75 and self.closed_positions >= 10:
+            return "A"
+        if combined >= 0.55 and self.closed_positions >= 5:
+            return "B"
+        if combined >= 0.35:
+            return "C"
+        return "D"
+
+
+@dataclass
+class TraderStats:
+    """Enriched trader quality data from v1/user-stats + activity/positions."""
+    address: str
+    predictions: int = 0
+    largest_win: float = 0.0
+    join_date: Optional[datetime] = None
+    closed_positions: int = 0       # wins + losses
+    winning_positions: int = 0      # unique markets with REDEEM events
+    losing_positions: int = 0       # unique markets resolved as losses
+    total_closed_pnl: float = 0.0
+    activity_cache: list = field(default_factory=list)  # raw activity for chart
+
+    @property
+    def win_rate(self) -> float:
+        if self.closed_positions == 0:
+            return 0.0
+        return self.winning_positions / self.closed_positions
+
+    @property
+    def days_active(self) -> int:
+        if self.join_date is None:
+            return 0
+        jd = self.join_date if self.join_date.tzinfo else self.join_date.replace(tzinfo=timezone.utc)
+        return max(0, (datetime.now(timezone.utc) - jd).days)
 
 
 @dataclass
@@ -143,15 +214,12 @@ class TraderPosition:
     size: float
     avg_price: float
     current_value: float = 0.0
-    # Extra fields carried straight from the /positions payload so we can resolve
-    # the market without a fragile Gamma round-trip (the old code dropped these,
-    # which is why top-trader positions silently failed to become picks).
     title: str = ""
     slug: str = ""
     event_slug: str = ""
     end_date: Optional[datetime] = None
-    token_id: str = ""              # the held outcome's CLOB token id ("asset")
-    opposite_token_id: str = ""     # the other outcome's token id ("oppositeAsset")
+    token_id: str = ""
+    opposite_token_id: str = ""
     cur_price: float = 0.0
 
 
@@ -166,21 +234,21 @@ class TraderStake:
 @dataclass
 class MarketConsensus:
     market: Market
-    yes_weight: float         # sum of trader scores backing YES
-    no_weight: float          # sum of trader scores backing NO
+    yes_weight: float
+    no_weight: float
     num_traders_yes: int
     num_traders_no: int
     total_volume_backing: float
     traders: list[LeaderboardTrader] = field(default_factory=list)
     yes_stakes: list[TraderStake] = field(default_factory=list)
     no_stakes: list[TraderStake] = field(default_factory=list)
-    daily_score: float = 0.0              # urgency × confidence × win_rate × count_factor × 100
-    category: str = ""                    # e.g. "sports", "politics", "crypto"
-    subcategory: str = ""                 # e.g. "nfl", "nba", "soccer"
-    avg_dominant_win_rate: float = 0.0    # average pct_positive of traders on dominant side
-    horizon: str = ""                     # "tonight" | "short" | "long" — copy-trade time bucket
-    dominant_position_value: float = 0.0  # total $ the convicted traders hold on the dominant side
-    copy_score: float = 0.0               # 0–100 strength of the smart-money copy signal
+    daily_score: float = 0.0
+    category: str = ""
+    subcategory: str = ""
+    avg_dominant_win_rate: float = 0.0
+    horizon: str = ""
+    dominant_position_value: float = 0.0
+    copy_score: float = 0.0
 
     @property
     def dominant_side(self) -> Side:
@@ -205,59 +273,20 @@ class MarketConsensus:
 
     @property
     def dominant_stakes(self) -> list["TraderStake"]:
-        """The per-trader stakes backing the dominant side (largest first)."""
         return self.yes_stakes if self.yes_weight >= self.no_weight else self.no_stakes
 
 
 @dataclass
 class ScoreBreakdown:
-    """Individual factor scores that compose the final signal score."""
-    leaderboard: float = 0.0       # 0–30: conviction-weighted consensus
-    fair_value_edge: float = 0.0   # 0–30: mispricing vs external odds
-    line_movement: float = 0.0     # 0–20: volume spikes + price momentum
-    news_momentum: float = 0.0     # 0–10: trending news relevance
-    urgency: float = 0.0           # 0–10: sooner resolution = higher
+    leaderboard: float = 0.0
+    fair_value_edge: float = 0.0
+    line_movement: float = 0.0
+    news_momentum: float = 0.0
+    urgency: float = 0.0
 
     @property
     def total(self) -> float:
-        return min(100.0, self.leaderboard + self.fair_value_edge +
-                   self.line_movement + self.news_momentum + self.urgency)
-
-    def explain(self) -> str:
-        parts = []
-        if self.leaderboard > 0:
-            parts.append(f"Leaderboard {self.leaderboard:.0f}/30")
-        if self.fair_value_edge > 0:
-            parts.append(f"Edge {self.fair_value_edge:.0f}/30")
-        if self.line_movement > 0:
-            parts.append(f"Momentum {self.line_movement:.0f}/20")
-        if self.news_momentum > 0:
-            parts.append(f"News {self.news_momentum:.0f}/10")
-        if self.urgency > 0:
-            parts.append(f"Urgency {self.urgency:.0f}/10")
-        return " | ".join(parts)
-
-
-@dataclass
-class Signal:
-    market: Market
-    combined_score: float     # 0–100
-    signal_type: SignalType
-    recommended_side: Side
-    recommended_price: float
-    scores: ScoreBreakdown = field(default_factory=ScoreBreakdown)
-    consensus: Optional[MarketConsensus] = None
-    explanation: str = ""
-    fair_value: Optional[float] = None   # external implied probability, if available
-    edge_pct: float = 0.0               # polymarket price vs fair value difference
-
-
-@dataclass
-class TradeResult:
-    success: bool
-    market_question: str
-    side: str
-    price: float
-    size: float
-    order_id: Optional[str] = None
-    error: Optional[str] = None
+        return min(
+            100.0,
+            self.leaderboard + self.fair_value_edge
+            + self.line_movement + self.news_momentum + 

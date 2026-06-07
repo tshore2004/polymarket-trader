@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from config import Config
 from core.api_client import PolymarketPublicClient
@@ -269,7 +270,9 @@ class SignalEngine:
         news_by_id = {s.market.condition_id: s for s in news_signals}
         vol_by_id = {s.market.condition_id: s for s in volume_signals}
 
-        signals: list[Signal] = []
+        # Pre-filter to qualifying markets and determine which tokens need midpoints
+        qualifying: list[tuple[Market, MarketConsensus | None, Signal | None, Signal | None, Side]] = []
+        tokens_to_fetch: dict[str, str] = {}  # token_id → condition_id
 
         for market in markets:
             if market.time_category == "past" or market.closed or not market.active:
@@ -278,22 +281,11 @@ class SignalEngine:
             con = con_by_id.get(mid)
             news_sig = news_by_id.get(mid)
             vol_sig = vol_by_id.get(mid)
-
-            # An "informative" market has smart-money backing or some other live
-            # factor. Urgency alone never qualifies — but tonight markets with real
-            # trading volume ($10k+) are surfaced so current events always appear.
             is_liquid_tonight = (market.urgency_score == 1.0 and market.volume >= 10_000)
             has_info = bool(con or vol_sig or news_sig or is_liquid_tonight)
             if not has_info:
                 continue
 
-            scores = ScoreBreakdown()
-
-            # 1. Leaderboard conviction (0–30) — driven by the copy-strength score
-            if con:
-                scores.leaderboard = round(min(30.0, 0.30 * con.copy_score), 2)
-
-            # 2. Determine recommended side from consensus (or default YES)
             if con:
                 side = Side.YES if con.dominant_side == Side.YES else Side.NO
             elif vol_sig:
@@ -301,13 +293,44 @@ class SignalEngine:
             else:
                 side = Side.YES
 
-            # Get current live price (only for real candidates — keeps the scan fast)
+            qualifying.append((market, con, news_sig, vol_sig, side))
+            token = market.yes_token if side == Side.YES else market.no_token
+            if token and token.token_id:
+                tokens_to_fetch[token.token_id] = mid
+
+        # Batch-fetch midpoints in parallel (much faster than sequential)
+        midpoints: dict[str, float] = {}
+        if tokens_to_fetch:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futures = {
+                    pool.submit(self._client.get_midpoint, tid): tid
+                    for tid in tokens_to_fetch
+                }
+                for fut in as_completed(futures):
+                    tid = futures[fut]
+                    try:
+                        result = fut.result()
+                        if result is not None:
+                            midpoints[tid] = result
+                    except Exception:
+                        pass
+
+        signals: list[Signal] = []
+
+        for market, con, news_sig, vol_sig, side in qualifying:
+            mid = market.condition_id
+
+            scores = ScoreBreakdown()
+
+            # 1. Leaderboard conviction (0–30) — driven by the copy-strength score
+            if con:
+                scores.leaderboard = round(min(30.0, 0.30 * con.copy_score), 2)
+
+            # 2. Get cached midpoint price
             token = market.yes_token if side == Side.YES else market.no_token
             price = 0.5
-            if token:
-                mid_price = self._client.get_midpoint(token.token_id)
-                if mid_price:
-                    price = mid_price
+            if token and token.token_id:
+                price = midpoints.get(token.token_id, 0.5)
 
             # 3. Fair value edge (0–30)
             edge_pct, fair_value, fv_source = self._fv.edge(
@@ -446,27 +469,4 @@ class SignalEngine:
                 signal_type=SignalType.VOLUME_SPIKE,
                 recommended_side=Side.YES,
                 recommended_price=round(price, 4),
-                scores=scores,
-                explanation=explanation,
-            ))
-
-        for market, delta, explanation in price_moves:
-            if market.condition_id in seen:
-                continue
-            seen.add(market.condition_id)
-            raw_score = round(min(10.0, abs(delta) / 0.2 * 10.0), 2)
-            yes = market.yes_token
-            price = yes.price if yes and yes.price > 0 else 0.5
-            side = Side.YES if delta > 0 else Side.NO
-            scores = ScoreBreakdown(line_movement=raw_score)
-            signals.append(Signal(
-                market=market,
-                combined_score=raw_score,
-                signal_type=SignalType.VOLUME_SPIKE,
-                recommended_side=side,
-                recommended_price=round(price, 4),
-                scores=scores,
-                explanation=explanation,
-            ))
-
-        return sorted(signals, key=lambda s: -s.combined_score)
+    

@@ -14,10 +14,12 @@ from config import Config
 from core.executor import TradeExecutor
 from core.scanner import BackgroundScanner
 from core.signal import SignalEngine
+from core.starred_traders import StarredTraderStore
 from utils.models import Side
 
 templates = Jinja2Templates(directory="templates")
 scanner: BackgroundScanner | None = None
+starred_store: StarredTraderStore | None = None
 
 
 def _jsonify(obj: Any) -> Any:
@@ -36,10 +38,11 @@ def _jsonify(obj: Any) -> Any:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner
+    global scanner, starred_store
     config = Config.load()
     engine = SignalEngine(config)
     executor = TradeExecutor(config)
+    starred_store = engine._lb.starred
     scanner = BackgroundScanner(engine, executor, config.scan_interval, scan_mode=config.scan_mode)
     scanner.start()
     yield
@@ -100,6 +103,8 @@ async def api_picks():
     active_picks = [p for p in snap.picks
                     if p.market.time_category != "past" and not p.market.closed]
     picks_raw = _jsonify(active_picks)
+    # Build trader lookup for quality info
+    trader_lookup = {t.address: t for t in snap.traders}
     for raw, pick in zip(picks_raw, active_picks):
         raw["dominant_side"] = pick.dominant_side.value
         raw["total_traders"] = pick.num_traders_yes + pick.num_traders_no
@@ -108,6 +113,8 @@ async def api_picks():
         raw["category"] = pick.category
         raw["subcategory"] = pick.subcategory
         raw["avg_dominant_win_rate"] = pick.avg_dominant_win_rate
+        raw["copy_score"] = pick.copy_score
+        raw["dominant_position_value"] = pick.dominant_position_value
         dominant_tok = (
             pick.market.yes_token
             if pick.dominant_side == Side.YES
@@ -123,6 +130,17 @@ async def api_picks():
             if dominant_tok and dominant_tok.outcome.lower() not in ("yes", "no", "1", "0", "")
             else pick.dominant_side.value
         )
+        # Enrich stakes with trader quality data
+        for side_key in ("yes_stakes", "no_stakes"):
+            if side_key in raw:
+                for stake in raw[side_key]:
+                    t = trader_lookup.get(stake.get("address", ""))
+                    if t:
+                        stake["consistency_grade"] = t.consistency_grade
+                        stake["num_trades"] = t.num_trades
+                        stake["pct_positive"] = round(t.pct_positive, 4)
+                        stake["profit"] = round(t.profit, 2)
+                        stake["starred"] = t.starred
     return JSONResponse(picks_raw)
 
 
@@ -130,52 +148,15 @@ async def api_picks():
 async def api_leaderboard():
     snap = scanner.get_snapshot()
     traders = _jsonify(snap.traders)
+    # Enrich with quality fields not in dataclass asdict
+    for raw, t in zip(traders, snap.traders):
+        raw["consistency_grade"] = t.consistency_grade
+        raw["profit_per_trade"] = round(t.profit_per_trade, 2)
+        raw["starred"] = t.starred
+        raw["largest_win"] = round(t.largest_win, 2)
+        raw["closed_positions"] = t.closed_positions
+        raw["winning_positions"] = t.winning_positions
+        raw["win_rate"] = round(t.pct_positive, 4)
+        raw["join_date"] = t.join_date.isoformat() if t.join_date else None
 
-    consensuses_raw = _jsonify(snap.consensuses)
-    consensuses = []
-    for raw, con in zip(consensuses_raw, snap.consensuses):
-        raw["confidence"] = round(con.confidence, 4)
-        raw["dominant_side"] = con.dominant_side.value
-        raw["dominant_weight"] = round(con.dominant_weight, 2)
-        consensuses.append(raw)
-
-    return JSONResponse({"traders": traders, "consensuses": consensuses})
-
-
-@app.get("/api/news")
-async def api_news():
-    snap = scanner.get_snapshot()
-    return JSONResponse(_jsonify(snap.news_signals))
-
-
-@app.get("/api/volume")
-async def api_volume():
-    snap = scanner.get_snapshot()
-    return JSONResponse(_jsonify(snap.volume_signals))
-
-
-@app.post("/api/scan")
-async def api_scan(mode: str = Query(default=None)):
-    triggered = scanner.trigger_scan(mode=mode)
-    return JSONResponse({
-        "triggered": triggered,
-        "mode": mode or scanner.get_snapshot().scan_mode,
-        "message": "Scan started." if triggered else "Scan already in progress.",
-    })
-
-
-@app.post("/api/mode")
-async def api_set_mode(mode: str = Query(...)):
-    scanner.set_mode(mode)
-    return JSONResponse({"mode": mode, "message": f"Mode set to {mode!r}."})
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    p = argparse.ArgumentParser(description="Polymarket Trader web dashboard")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8000)
-    args = p.parse_args()
-
-    uvicorn.run("server:app", host=args.host, port=args.port, reload=False)
+    consensuses_raw

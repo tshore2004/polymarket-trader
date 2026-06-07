@@ -53,6 +53,7 @@ main.py
 | `core/volume_tracker.py` | Volume spike and price movement detection |
 | `core/signal.py` | `SignalEngine` — orchestrates all analyzers, multi-factor scoring |
 | `core/executor.py` | Prompts user, sizes bets, places orders via `py-clob-client` |
+| `core/starred_traders.py` | JSON-backed starred trader persistence |
 | `core/scanner.py` | Background daemon thread for web server mode |
 | `server.py` | FastAPI web dashboard |
 
@@ -71,6 +72,35 @@ Optional:
 - `COPY_MIN_POSITION_USD` — minimum position size ($) to count as conviction (default 100)
 - `DAILY_REPORT_TOP_N` — number of picks shown in daily report (default 12)
 - `SHORT_TERM_HOURS` — hours window for "tonight/tomorrow" bucket (default 48)
+
+## Trader Quality Scoring
+
+Traders are scored for **consistency**, not just raw profit. The formula:
+
+| Factor | Weight | What it rewards |
+|--------|--------|-----------------|
+| Profit (dampened) | 25% | Profit × consistency — big wins only count if backed by trade count |
+| Volume | 15% | Active participation |
+| Win rate | 30% | `pct_positive` — strongest consistency signal |
+| Consistency | 30% | Log-scaled trade count — need ~50 trades to be "proven" |
+
+Each trader gets a letter grade (A/B/C/D) shown in pick cards. A one-hit wonder with 3 trades and $80k profit gets grade C; a grinder with 200 trades and 63% win rate gets grade A.
+
+## Starred Traders
+
+Star traders you trust to track them across sessions:
+- `star <pick#>` — star all traders backing a pick
+- `unstar <address>` — remove a starred trader
+- `stars` — view all starred traders with positions
+
+Starred traders are loaded even if they fall off the leaderboard. Data persists in `starred_traders.json`.
+
+## Resolved Event Filtering
+
+Markets are filtered at multiple layers:
+- Position-level: `curPrice` of 0 or 1 → already settled, skip entirely
+- Market-level: `end_date` in the past, `closed=true`, or `active=false` → excluded
+- Synthesized markets: if no `end_date` but `curPrice` is pinned → marked as past
 
 ## Scoring System (0–100)
 

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from curl_cffi import requests as cf_requests
-from utils.models import Market, Token, OrderBook, OrderLevel, LeaderboardTrader, TraderPosition
+from utils.models import Market, Token, OrderBook, OrderLevel, LeaderboardTrader, TraderPosition, TraderStats
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ _GAMMA_BASE = "https://gamma-api.polymarket.com"
 _CLOB_BASE = "https://clob.polymarket.com"
 
 _DEFAULT_TIMEOUT = 8
-_RATE_LIMIT_SLEEP = 0.05   # ~20 req/sec max across all threads
+_RATE_LIMIT_SLEEP = 0.03   # ~33 req/sec max across all threads
 
 # Cloudflare TLS fingerprint rotation — tried in order on curl (35) resets.
 # chrome120 is listed first: it passes Cloudflare's bot checks on all Polymarket domains
@@ -48,6 +48,9 @@ class PolymarketPublicClient:
         # across all threads, preventing Cloudflare from flagging burst traffic.
         self._rate_lock = threading.Lock()
         self._last_call = 0.0
+        # Midpoint cache: {token_id: (timestamp, price)} — avoids redundant CLOB calls
+        self._midpoint_cache: dict[str, tuple[float, float]] = {}
+        self._midpoint_cache_ttl = 60.0  # seconds
 
     @staticmethod
     def _make_cf_session(profile: str = "chrome120", extra_headers: dict | None = None) -> cf_requests.Session:
@@ -370,9 +373,17 @@ class PolymarketPublicClient:
     def get_midpoint(self, token_id: str) -> Optional[float]:
         if not token_id:
             return None
+        # Check cache first
+        cached = self._midpoint_cache.get(token_id)
+        if cached:
+            ts, price = cached
+            if time.monotonic() - ts < self._midpoint_cache_ttl:
+                return price
         try:
             data = self._get(f"{_CLOB_BASE}/midpoint", {"token_id": token_id})
-            return float(data["mid"])
+            price = float(data["mid"])
+            self._midpoint_cache[token_id] = (time.monotonic(), price)
+            return price
         except Exception:
             return None
 
@@ -407,12 +418,36 @@ class PolymarketPublicClient:
                 )
             )
 
-        # Normalize scores: profit rank × volume weight
+        # Normalize scores: reward CONSISTENT winners, not one-hit wonders.
+        #
+        # Components:
+        #   - profit_norm (25%): raw profit, but dampened by consistency factor
+        #   - volume_norm (15%): shows active participation
+        #   - win_rate    (30%): pct_positive is the strongest consistency signal
+        #   - consistency (30%): log-scaled trade count — need ~50 trades to be "proven"
+        #
+        # A trader with 3 trades and $80k profit scores much lower than one with
+        # 200 trades, 63% win rate, and $15k profit.
         if traders:
+            import math
             max_profit = max(t.profit for t in traders) or 1.0
             max_vol = max(t.volume for t in traders) or 1.0
             for t in traders:
-                t.score = 0.6 * (t.profit / max_profit) + 0.4 * (t.volume / max_vol)
+                profit_norm = t.profit / max_profit
+                volume_norm = t.volume / max_vol
+                # Win rate: API returns 0–1. Default to 0.5 only if genuinely no data.
+                # Note: at this stage closed_positions hasn't been enriched yet,
+                # so we use the raw pct_positive from the leaderboard API.
+                win_rate = t.pct_positive if t.pct_positive > 0 else 0.5
+                # Consistency: log-scaled trade count. 50 trades → ~1.0, 5 trades → ~0.41
+                consistency = min(1.0, math.log10(1 + t.num_trades) / math.log10(51))
+                # Profit is only meaningful when backed by enough trades
+                t.score = (
+                    0.25 * profit_norm * consistency
+                    + 0.15 * volume_norm
+                    + 0.30 * win_rate
+                    + 0.30 * consistency
+                )
 
         return sorted(traders, key=lambda t: t.score, reverse=True)
 
@@ -448,49 +483,97 @@ class PolymarketPublicClient:
         )
         return None
 
-    def get_trader_positions(self, address: str) -> list[TraderPosition]:
+    def get_trader_stats(self, address: str) -> TraderStats:
+        """Fetch aggregate trader stats from v1/user-stats + activity/positions.
+
+        Combines three endpoints:
+        - v1/user-stats: prediction count, largest win, join date
+        - activity (all types): wins (REDEEM), buys, sells for PnL chart
+        - positions (curPrice=0): losing markets (resolved losers)
+
+        Win rate = unique_redeemed_markets / (unique_redeemed + unique_lost).
+        Raw activity rows are saved in stats.activity_cache for the profile chart.
+        """
+        stats = TraderStats(address=address)
+
+        # 1) Aggregate stats from v1/user-stats
         try:
             data = self._get(
-                f"{_DATA_BASE}/positions",
-                {"user": address, "sizeThreshold": "0", "limit": 500},
+                f"{_DATA_BASE}/v1/user-stats",
+                {"proxyAddress": address},
             )
-        except Exception:
-            return []
-
-        positions = []
-        for pos in (data if isinstance(data, list) else data.get("data", [])):
-            size = float(pos.get("size", 0) or 0)
-            if size <= 0:
-                continue
-
-            # Parse the position's own resolution date if present — lets us bucket
-            # the pick by horizon without re-fetching the market.
-            end_date: Optional[datetime] = None
-            for _key in ("endDate", "endDateIso", "end_date"):
-                raw_date = pos.get(_key)
-                if raw_date:
+            if isinstance(data, dict):
+                stats.predictions = int(data.get("trades", 0) or 0)
+                stats.largest_win = float(data.get("largestWin", 0) or 0)
+                join_raw = data.get("joinDate")
+                if join_raw and join_raw != "":
                     try:
-                        end_date = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+                        stats.join_date = datetime.fromisoformat(
+                            str(join_raw).replace("Z", "+00:00")
+                        )
                     except Exception:
                         pass
-                    else:
-                        break
+        except Exception as exc:
+            logger.debug("user-stats fetch failed for %s: %s", address, exc)
 
-            positions.append(
-                TraderPosition(
-                    trader_address=address,
-                    market_id=pos.get("conditionId", pos.get("market", "")),
-                    outcome=str(pos.get("outcome", "Yes")),
-                    size=size,
-                    avg_price=float(pos.get("avgPrice", 0) or 0),
-                    current_value=float(pos.get("currentValue", 0) or 0),
-                    title=str(pos.get("title", "") or ""),
-                    slug=str(pos.get("slug", "") or ""),
-                    event_slug=str(pos.get("eventSlug", pos.get("event_slug", "")) or ""),
-                    end_date=end_date,
-                    token_id=str(pos.get("asset", pos.get("tokenId", "")) or ""),
-                    opposite_token_id=str(pos.get("oppositeAsset", "") or ""),
-                    cur_price=float(pos.get("curPrice", pos.get("currentPrice", 0)) or 0),
-                )
+        # 2) Fetch ALL activity (no type filter) — gets REDEEM, BUY, SELL, etc.
+        all_activity: list[dict] = []
+        win_markets: set[str] = set()
+        try:
+            data = self._get(
+                f"{_DATA_BASE}/activity",
+                {"user": address, "limit": 500},
             )
-        return positions
+            all_activity = data if isinstance(data, list) else data.get("data", [])
+        except Exception as exc:
+            logger.debug("All-activity fetch failed for %s: %s", address, exc)
+
+        # If all-activity failed, try REDEEM-only (more reliable, less Cloudflare scrutiny)
+        if not all_activity:
+            try:
+                data = self._get(
+                    f"{_DATA_BASE}/activity",
+                    {"user": address, "limit": 500, "type": "REDEEM"},
+                )
+                all_activity = data if isinstance(data, list) else data.get("data", [])
+            except Exception as exc:
+                logger.debug("REDEEM activity fetch failed for %s: %s", address, exc)
+
+        # Parse activity: extract wins and build chart cache
+        # Activity API returns type=TRADE with side=BUY/SELL (not type=BUY/SELL).
+        # Other types: REDEEM, SPLIT, MERGE, REWARD, CONVERSION.
+        for row in all_activity:
+            row_type = str(row.get("type", "")).upper()
+            row_side = str(row.get("side", "")).upper()
+            cid = row.get("conditionId")
+            usdc = float(row.get("usdcSize", 0) or 0)
+
+            if row_type == "REDEEM" and cid:
+                win_markets.add(cid)
+                stats.total_closed_pnl += usdc
+
+            # Cache for profile chart — include side so the JS chart can
+            # distinguish BUY vs SELL within TRADE rows.
+            ts_raw = row.get("timestamp") or row.get("createdAt")
+            if ts_raw:
+                # Activity API returns timestamp as unix seconds (int),
+                # not ISO string. Handle both formats.
+                try:
+                    if isinstance(ts_raw, (int, float)):
+                        ts = datetime.fromtimestamp(ts_raw, tz=timezone.utc)
+                    else:
+                        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                    stats.activity_cache.append({
+                        "timestamp": ts.isoformat(),
+                        "type": row_type or "UNKNOWN",
+                        "side": row_side,  # BUY or SELL (only set on TRADE rows)
+                        "conditionId": cid or "",
+                        "usdcSize": usdc,
+                        "title": str(row.get("title", "") or ""),
+                        "outcome": str(row.get("outcome", "") or ""),
+                    })
+                except Exception:
+                    pass
+
+        stats.winning_positions = len(win_markets)
+        # Sort activity chronologically for

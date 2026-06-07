@@ -7,12 +7,13 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from config import Config
 from core.api_client import PolymarketPublicClient
-from utils.models import Market, Token, LeaderboardTrader, TraderPosition, MarketConsensus, TraderStake, Side
+from utils.models import Market, Token, LeaderboardTrader, TraderPosition, MarketConsensus, TraderStake, TraderStats, Side
 from utils.categories import detect_market_category
+from core.starred_traders import StarredTraderStore
 
 logger = logging.getLogger(__name__)
 
-_MAX_WORKERS = 3
+_MAX_WORKERS = 6
 _MAX_PICKS_PER_EVENT = 2
 # Cap how many position-held markets we enrich via Gamma per refresh. The rest are
 # synthesized from the position payload, keeping scans fast and resilient to resets.
@@ -112,6 +113,11 @@ def _market_from_position(pos: TraderPosition) -> "Market | None":
         if ed < now:
             is_past = True
 
+    # Resolved-market detection: if the current price is pinned at 0 or 1, the
+    # market has already settled regardless of end_date presence.
+    if pos.cur_price is not None and pos.cur_price in (0.0, 1.0):
+        is_past = True
+
     return Market(
         condition_id=pos.market_id,
         question=pos.title,
@@ -187,6 +193,8 @@ class LeaderboardAnalyzer:
         self._traders: list[LeaderboardTrader] = []
         self._positions: dict[str, list[TraderPosition]] = {}
         self._extra_markets: dict[str, Market] = {}
+        self._starred = StarredTraderStore()
+        self._activity_cache: dict[str, list[dict]] = {}  # address → activity rows
 
     def refresh(self) -> None:
         logger.info("Refreshing leaderboard...")
@@ -208,10 +216,36 @@ class LeaderboardAnalyzer:
             return  # Keep existing self._traders / self._positions intact
 
         self._traders = new_traders
-        logger.info("Fetching positions for %d top traders...", len(self._traders))
+
+        # Mark starred traders
+        starred_addrs = self._starred.get_addresses()
+        for t in self._traders:
+            t.starred = t.address.lower() in starred_addrs
+
+        # Also include starred traders who fell off the leaderboard
+        leaderboard_addrs = {t.address.lower() for t in self._traders}
+        starred_not_on_lb = starred_addrs - leaderboard_addrs
+        if starred_not_on_lb:
+            logger.info("Including %d starred traders not on leaderboard.", len(starred_not_on_lb))
+            starred_entries = self._starred.get_all()
+            for st in starred_entries:
+                if st.address.lower() in starred_not_on_lb:
+                    self._traders.append(LeaderboardTrader(
+                        address=st.address,
+                        name=st.name or st.address[:10] + "…",
+                        profit=0.0, volume=0.0, num_trades=0,
+                        pct_positive=0.0, score=0.0, starred=True,
+                    ))
+
+        logger.info("Fetching positions + stats for %d traders (%d starred)...",
+                     len(self._traders), sum(1 for t in self._traders if t.starred))
         self._positions = self._fetch_all_positions(self._traders)
         self._extra_markets = {}
         total_pos = sum(len(v) for v in self._positions.values())
+
+        # Enrich traders with real stats (prediction count, win rate, etc.)
+        self._enrich_trader_stats(self._traders)
+
         logger.info("Leaderboard refresh complete — %d open positions across top traders.", total_pos)
 
     def _fetch_all_positions(
@@ -231,6 +265,86 @@ class LeaderboardAnalyzer:
                     logger.debug("Position fetch failed for %s: %s", addr, exc)
                     results[addr] = []
         return results
+
+    def _enrich_trader_stats(self, traders: list[LeaderboardTrader]) -> None:
+        """Fetch real stats (prediction count, win rate) for each trader in parallel.
+
+        The v1 leaderboard API doesn't return numTrades or percentPositive, so
+        without this enrichment all traders show 0 trades and grade D. This calls
+        v1/user-stats + closed positions per trader and backfills the fields, then
+        re-scores everyone.
+
+        Activity data (for the profile chart) is cached in self._activity_cache
+        keyed by trader address.
+        """
+        stats_map: dict[str, TraderStats] = {}
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+            futures = {
+                pool.submit(self._client.get_trader_stats, t.address): t.address
+                for t in traders
+            }
+            for fut in as_completed(futures):
+                addr = futures[fut]
+                try:
+                    stats_map[addr] = fut.result()
+                except Exception as exc:
+                    logger.debug("Stats enrichment failed for %s: %s", addr, exc)
+
+        for t in traders:
+            st = stats_map.get(t.address)
+            if not st:
+                continue
+            t.num_trades = st.predictions
+            t.largest_win = st.largest_win
+            t.join_date = st.join_date
+            t.closed_positions = st.closed_positions
+            t.winning_positions = st.winning_positions
+            # Use real win rate from closed positions if we have enough data;
+            # fall back to a neutral 0.5 if too few closed positions.
+            if st.closed_positions >= 3:
+                t.pct_positive = st.win_rate
+            elif st.closed_positions > 0:
+                # Bayesian shrinkage: blend observed rate toward 0.5 when sample is tiny
+                t.pct_positive = (st.win_rate * st.closed_positions + 0.5 * 3) / (st.closed_positions + 3)
+
+            # Cache activity for profile chart
+            if st.activity_cache:
+                self._activity_cache[t.address] = st.activity_cache
+
+        # Re-score with real data
+        self._rescore_traders(traders)
+        enriched = sum(1 for t in traders if stats_map.get(t.address))
+        logger.info("Enriched %d/%d traders with real stats.", enriched, len(traders))
+
+    @staticmethod
+    def _rescore_traders(traders: list[LeaderboardTrader]) -> None:
+        """Recompute normalized scores using the same formula as api_client, but
+        now with real num_trades and pct_positive values.
+
+        Win rate: uses actual pct_positive when closed_positions >= 3;
+        Bayesian-shrunk toward 0.5 for 1-2 closed; 0.5 default only when
+        there's genuinely no closed position data.
+        """
+        if not traders:
+            return
+        max_profit = max(t.profit for t in traders) or 1.0
+        max_vol = max(t.volume for t in traders) or 1.0
+        for t in traders:
+            profit_norm = t.profit / max_profit
+            volume_norm = t.volume / max_vol
+            if t.closed_positions >= 3:
+                win_rate = t.pct_positive
+            elif t.closed_positions > 0:
+                win_rate = (t.pct_positive * t.closed_positions + 0.5 * 3) / (t.closed_positions + 3)
+            else:
+                win_rate = 0.5  # no data
+            consistency = min(1.0, math.log10(1 + t.num_trades) / math.log10(51))
+            t.score = (
+                0.25 * profit_norm * consistency
+                + 0.15 * volume_norm
+                + 0.30 * win_rate
+                + 0.30 * consistency
+            )
 
     def _build_market_lookup(self, markets: list[Market]) -> dict[str, Market]:
         lookup: dict[str, Market] = {m.condition_id: m for m in markets}
@@ -353,6 +467,10 @@ class LeaderboardAnalyzer:
             for pos in self._positions.get(trader.address, []):
                 mid = pos.market_id
                 if mid not in market_lookup:
+                    continue
+
+                # Skip positions where curPrice indicates the market already settled
+                if pos.cur_price is not None and pos.cur_price in (0.0, 1.0):
                     continue
 
                 if min_position_usd > 0 and _position_usd(pos.size, pos.avg_price) < min_position_usd:
@@ -513,88 +631,4 @@ class LeaderboardAnalyzer:
         lookup = self._build_market_lookup(markets)
         now = datetime.now(timezone.utc)
         lookup = {
-            mid: m for mid, m in lookup.items()
-            if m.active and not m.closed
-            and not (m.end_date and (
-                m.end_date if m.end_date.tzinfo else m.end_date.replace(tzinfo=timezone.utc)
-            ) < now)
-        }
-        event_stats = self._compute_trader_event_stats(lookup)
-        agg = self._aggregate(lookup, event_stats)
-        picks = self._to_consensus_list(agg, min_dominant=1)
-
-        picks = sorted(picks, key=lambda c: c.daily_score, reverse=True)
-
-        # Event deduplication
-        event_counts: dict[str, int] = defaultdict(int)
-        deduped: list[MarketConsensus] = []
-        for pick in picks:
-            key = _event_key(pick.market)
-            if event_counts[key] < _MAX_PICKS_PER_EVENT:
-                deduped.append(pick)
-                event_counts[key] += 1
-
-        return deduped
-
-    def build_copy_picks(
-        self,
-        markets: list[Market],
-        min_position_usd: float = 0.0,
-        short_term_hours: int = 48,
-    ) -> list[MarketConsensus]:
-        """Smart-money copy picks: every market a top trader holds with conviction.
-
-        The universe is driven by the traders' *actual positions* (markets they hold
-        are resolved on demand via _build_market_lookup), not by the pre-fetched
-        market list — so tonight's games and long-dated futures alike show up as long
-        as a top trader is in them. Ranked by copy-strength, deduped per event.
-        """
-        if not self._traders:
-            return []
-        lookup = self._build_market_lookup(markets)
-        now = datetime.now(timezone.utc)
-        lookup = {
-            mid: m for mid, m in lookup.items()
-            if m.active and not m.closed
-            and not (m.end_date and (
-                m.end_date if m.end_date.tzinfo else m.end_date.replace(tzinfo=timezone.utc)
-            ) < now)
-        }
-        event_stats = self._compute_trader_event_stats(lookup)
-        agg = self._aggregate(lookup, event_stats, min_position_usd=min_position_usd)
-        picks = self._to_consensus_list(agg, min_dominant=1, short_term_hours=short_term_hours)
-        picks = sorted(picks, key=lambda c: c.copy_score, reverse=True)
-
-        event_counts: dict[str, int] = defaultdict(int)
-        deduped: list[MarketConsensus] = []
-        for pick in picks:
-            key = _event_key(pick.market)
-            if event_counts[key] < _MAX_PICKS_PER_EVENT:
-                deduped.append(pick)
-                event_counts[key] += 1
-        return deduped
-
-    def held_markets(self) -> list[Market]:
-        """Markets resolved from trader positions that weren't in the main list.
-
-        Lets the signal engine widen its scoring universe to include everything the
-        smart money is actually holding (e.g. a tonight game the generic scan missed).
-        """
-        return list(self._extra_markets.values())
-
-    @property
-    def traders(self) -> list[LeaderboardTrader]:
-        return self._traders
-
-    def score(self, consensus: MarketConsensus) -> float:
-        """Return 0–30 leaderboard conviction score.
-
-        Uses a blend: base_quality (confidence × win_rate) at 50% weight always,
-        scaled up to 100% as trader count grows. Avoids the old fully-multiplicative
-        formula that crushed scores when count was low (e.g. 3 traders / 8 cap = 0.375×).
-        """
-        conf = consensus.confidence
-        win_rate_factor = consensus.avg_dominant_win_rate if consensus.avg_dominant_win_rate > 0 else 0.5
-        base_quality = conf * win_rate_factor  # 0–1
-        count_bonus = min(1.0, consensus.num_traders_dominant / 4.0)  # reaches 1.0 at 4 traders
-        return min(30.0, base_quality * (0.5 + 0.5 * count_bonus) * 30.0)
+    

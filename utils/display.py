@@ -157,13 +157,25 @@ def show_signal(console: Console, sig: Signal, index: int) -> None:
             f"{con.confidence*100:.0f}% agreement  |  "
             f"{con.avg_dominant_win_rate*100:.0f}% avg win rate"
         )
-        # Per-trader stakes on the side we're recommending
+        # Per-trader stakes on the side we're recommending — with quality grades
         stakes = con.dominant_stakes[:5]
         if stakes:
-            stake_str = "  ".join(
-                f"{s.name} [dim]${s.size:,.0f}[/dim]" for s in stakes
-            )
-            table.add_row("Who's in", stake_str)
+            # Build lookup for quality info from the consensus traders list
+            trader_lookup = {t.address: t for t in con.traders}
+            stake_parts = []
+            for s in stakes:
+                t = trader_lookup.get(s.address)
+                if t:
+                    grade = t.consistency_grade
+                    grade_colors = {"A": "bright_green", "B": "yellow", "C": "dim", "D": "red"}
+                    gc = grade_colors.get(grade, "dim")
+                    star = "*" if t.starred else ""
+                    stake_parts.append(
+                        f"{star}{s.name} [{gc}]{grade}[/{gc}] [dim]${s.size:,.0f} ({t.num_trades}t)[/dim]"
+                    )
+                else:
+                    stake_parts.append(f"{s.name} [dim]${s.size:,.0f}[/dim]")
+            table.add_row("Who's in", "  ".join(stake_parts))
 
     if sig.explanation:
         table.add_row("Why", f"[dim italic]{sig.explanation}[/dim italic]")
@@ -398,6 +410,52 @@ def show_mode_menu(
 
     console.print()
     return mode, tags
+
+
+def show_starred_traders(console: Console, traders: list, positions: dict) -> None:
+    """Display starred traders with their stats and open positions.
+
+    Args:
+        traders: list of LeaderboardTrader objects (starred ones)
+        positions: dict {address: [TraderPosition, ...]}
+    """
+    from datetime import timezone as tz
+    starred = [t for t in traders if t.starred]
+    if not starred:
+        console.print("[dim]No starred traders yet. Use 'star <address>' from the report to star a trader.[/dim]")
+        return
+
+    console.print(f"\n[bold]Starred Traders ({len(starred)})[/bold]\n")
+
+    for t in starred:
+        grade = t.consistency_grade
+        grade_colors = {"A": "bright_green", "B": "yellow", "C": "dim", "D": "red"}
+        gc = grade_colors.get(grade, "dim")
+
+        console.print(
+            f"  [bold]*{t.name or t.address[:12]}[/bold]  "
+            f"Grade [{gc}]{grade}[/{gc}]  "
+            f"P&L: ${t.profit:,.0f}  "
+            f"Trades: {t.num_trades}  "
+            f"Win: {t.pct_positive*100:.0f}%  "
+            f"$/trade: ${t.profit_per_trade:,.0f}"
+        )
+
+        # Show open positions
+        pos_list = positions.get(t.address, [])
+        active_pos = [p for p in pos_list if p.cur_price not in (0.0, 1.0)]
+        if active_pos:
+            for p in active_pos[:5]:
+                title = p.title[:50] if p.title else p.market_id[:12]
+                console.print(
+                    f"    [dim]{p.outcome} @ {p.cur_price:.3f}  "
+                    f"size {p.size:.0f}  {title}[/dim]"
+                )
+            if len(active_pos) > 5:
+                console.print(f"    [dim]... +{len(active_pos)-5} more positions[/dim]")
+        else:
+            console.print("    [dim]No active positions[/dim]")
+        console.print()
 
 
 def show_run_mode_menu(console: Console) -> str:
