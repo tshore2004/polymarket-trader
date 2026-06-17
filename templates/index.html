@@ -777,10 +777,13 @@
                           x-text="moneyFmt(t.profit_per_trade || 0)"></td>
                       <td class="px-3 py-3 text-right text-gray-500" x-text="t.num_trades"></td>
                       <td class="px-3 py-3 text-right">
-                        <span :class="t.closed_positions >= 10 ? (t.pct_positive >= 0.6 ? 'text-green-400' : t.pct_positive >= 0.5 ? 'text-gray-300' : 'text-yellow-500') : 'text-gray-600'"
-                              x-text="(t.pct_positive * 100).toFixed(1) + '%'"></span>
-                        <span x-show="t.closed_positions < 10" class="text-xs text-gray-700 ml-0.5"
-                              x-text="'(' + (t.closed_positions || 0) + ')'"></span>
+                        <template x-if="(t.closed_positions - t.winning_positions) > 0">
+                          <span :class="t.closed_positions >= 10 ? (t.pct_positive >= 0.6 ? 'text-green-400' : t.pct_positive >= 0.5 ? 'text-gray-300' : 'text-yellow-500') : 'text-gray-600'"
+                                x-text="(t.pct_positive * 100).toFixed(1) + '%'"></span>
+                        </template>
+                        <template x-if="(t.closed_positions - t.winning_positions) <= 0">
+                          <span class="text-gray-700 text-xs" title="Loss data unavailable from API">N/A</span>
+                        </template>
                       </td>
                       <td class="px-3 py-3 text-right">
                         <span class="text-purple-400 font-bold" x-text="(t.score * 100).toFixed(0)"></span>
@@ -909,8 +912,8 @@
                   <div class="bg-gray-800/50 rounded-lg p-2">
                     <div class="text-xs text-gray-500 mb-0.5">Win Rate</div>
                     <div class="font-medium text-sm"
-                         :class="t.pct_positive >= 0.6 ? 'text-green-400' : t.pct_positive >= 0.5 ? 'text-gray-300' : 'text-yellow-500'"
-                         x-text="(t.pct_positive * 100).toFixed(1) + '%'"></div>
+                         :class="(t.closed_positions - t.winning_positions) > 0 ? (t.pct_positive >= 0.6 ? 'text-green-400' : t.pct_positive >= 0.5 ? 'text-gray-300' : 'text-yellow-500') : 'text-gray-600'"
+                         x-text="(t.closed_positions - t.winning_positions) > 0 ? (t.pct_positive * 100).toFixed(1) + '%' : 'N/A'"></div>
                   </div>
                   <div class="bg-gray-800/50 rounded-lg p-2">
                     <div class="text-xs text-gray-500 mb-0.5">Score</div>
@@ -967,4 +970,669 @@
                   <div class="flex h-1.5 rounded-full overflow-hidden bg-gray-800 mb-1">
                     <div class="bg-purple-600" :style="'width:' + (sig.scores.leaderboard / 100 * 100).toFixed(0) + '%'" :title="'Leaderboard: ' + sig.scores.leaderboard"></div>
                     <div class="bg-cyan-600" :style="'width:' + (sig.scores.fair_value_edge / 100 * 100).toFixed(0) + '%'" :title="'Fair Value: ' + sig.scores.fair_value_edge"></div>
-                    <div class="bg-yellow-500" :style="'width:' + (sig.scores.line_movem
+                    <div class="bg-yellow-500" :style="'width:' + (sig.scores.line_movement / 100 * 100).toFixed(0) + '%'" :title="'Volume: ' + sig.scores.line_movement"></div>
+                    <div class="bg-green-500" :style="'width:' + (sig.scores.news_momentum / 100 * 100).toFixed(0) + '%'" :title="'News: ' + sig.scores.news_momentum"></div>
+                    <div class="bg-orange-500" :style="'width:' + (sig.scores.urgency / 100 * 100).toFixed(0) + '%'" :title="'Urgency: ' + sig.scores.urgency"></div>
+                  </div>
+                  <div class="flex flex-wrap gap-3 text-xs text-gray-600">
+                    <span x-show="sig.scores.leaderboard > 0">
+                      <span class="inline-block w-2 h-2 rounded-full bg-purple-600 mr-1"></span>
+                      LB: <span class="text-purple-400" x-text="sig.scores.leaderboard.toFixed(0) + '/30'"></span>
+                    </span>
+                    <span x-show="sig.scores.fair_value_edge > 0">
+                      <span class="inline-block w-2 h-2 rounded-full bg-cyan-600 mr-1"></span>
+                      Edge: <span class="text-cyan-400" x-text="sig.scores.fair_value_edge.toFixed(0) + '/30'"></span>
+                    </span>
+                    <span x-show="sig.scores.line_movement > 0">
+                      <span class="inline-block w-2 h-2 rounded-full bg-yellow-500 mr-1"></span>
+                      Vol: <span class="text-yellow-400" x-text="sig.scores.line_movement.toFixed(0) + '/20'"></span>
+                    </span>
+                    <span x-show="sig.scores.news_momentum > 0">
+                      <span class="inline-block w-2 h-2 rounded-full bg-green-500 mr-1"></span>
+                      News: <span class="text-green-400" x-text="sig.scores.news_momentum.toFixed(0) + '/10'"></span>
+                    </span>
+                    <span x-show="sig.scores.urgency > 0">
+                      <span class="inline-block w-2 h-2 rounded-full bg-orange-500 mr-1"></span>
+                      Urg: <span class="text-orange-400" x-text="sig.scores.urgency.toFixed(0) + '/10'"></span>
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Fair value info -->
+                <div x-show="sig.fair_value" class="bg-gray-800/60 rounded-lg px-4 py-3 mb-2 text-sm">
+                  <div class="flex flex-wrap gap-4 text-xs">
+                    <span class="text-gray-600">Fair Value:
+                      <span class="text-cyan-300 font-medium font-mono" x-text="sig.fair_value ? sig.fair_value.toFixed(4) : ''"></span>
+                    </span>
+                    <span class="text-gray-600">Edge:
+                      <span class="font-medium font-mono"
+                            :class="sig.edge_pct > 0 ? 'text-green-400' : 'text-yellow-500'"
+                            x-text="sig.edge_pct ? (sig.edge_pct * 100).toFixed(1) + '%' : ''"></span>
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Explanation -->
+                <div x-show="sig.explanation"
+                     class="text-xs text-gray-500 italic bg-gray-800/40 rounded px-3 py-2 mb-2"
+                     x-text="sig.explanation"></div>
+
+                <!-- Consensus info -->
+                <div x-show="sig.consensus" class="bg-gray-800/60 rounded-lg px-4 py-3 text-sm">
+                  <div class="flex flex-wrap gap-4 text-xs">
+                    <span class="text-gray-600">Traders YES/NO:
+                      <span class="text-gray-300" x-text="sig.consensus ? sig.consensus.num_traders_yes + ' / ' + sig.consensus.num_traders_no : ''"></span>
+                    </span>
+                    <span class="text-gray-600">Confidence:
+                      <span class="text-purple-300 font-medium"
+                            x-text="sig.consensus ? (Math.abs(sig.consensus.yes_weight - sig.consensus.no_weight) / ((sig.consensus.yes_weight || 0) + (sig.consensus.no_weight || 0) || 1) * 100).toFixed(0) + '%' : ''"></span>
+                    </span>
+                    <span class="text-gray-600">Backing vol:
+                      <span class="text-gray-300" x-text="sig.consensus ? moneyFmt(sig.consensus.total_volume_backing) : ''"></span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+      </div><!-- /p-6 -->
+    </main>
+  </div><!-- /flex -->
+
+  <!-- ═══════════════════ TRADER PROFILE MODAL ═══════════════════ -->
+  <div x-show="selectedTrader" x-cloak
+       class="fixed inset-0 z-50 flex items-start justify-center pt-8 pb-8"
+       @keydown.escape.window="closeTraderProfile()">
+    <!-- Backdrop -->
+    <div class="absolute inset-0 bg-black/70" @click="closeTraderProfile()"></div>
+    <!-- Modal -->
+    <div class="relative bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl scrollbar-hide">
+
+      <!-- Loading -->
+      <div x-show="loadingProfile" class="p-12 text-center text-gray-500 animate-pulse">Loading trader profile…</div>
+
+      <div x-show="!loadingProfile && traderProfile">
+
+        <!-- Header -->
+        <div class="sticky top-0 bg-gray-900/95 backdrop-blur border-b border-gray-800 px-6 py-4 flex items-start justify-between z-10 rounded-t-2xl">
+          <div>
+            <div class="flex items-center gap-2">
+              <span x-show="traderProfile?.profile?.starred" class="text-yellow-400 text-lg">★</span>
+              <h2 class="text-lg font-bold text-gray-100"
+                  x-text="traderProfile?.profile?.name || traderProfile?.profile?.address?.substring(0,16) + '…'"></h2>
+              <span class="inline-flex items-center justify-center w-7 h-7 rounded-full text-sm font-bold"
+                    :class="gradeClass(traderProfile?.profile?.consistency_grade)"
+                    x-text="traderProfile?.profile?.consistency_grade || '?'"></span>
+            </div>
+            <div class="text-xs text-gray-600 font-mono mt-0.5" x-text="traderProfile?.profile?.address"></div>
+            <div x-show="traderProfile?.profile?.join_date" class="text-xs text-gray-700 mt-0.5"
+                 x-text="'Joined ' + (traderProfile?.profile?.join_date ? new Date(traderProfile.profile.join_date).toLocaleDateString() : '')"></div>
+          </div>
+          <button @click="closeTraderProfile()"
+                  class="text-gray-500 hover:text-gray-300 text-xl px-2 py-1 rounded hover:bg-gray-800 transition-colors">✕</button>
+        </div>
+
+        <!-- Stats grid -->
+        <div class="px-6 py-4">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            <div class="bg-gray-800/50 rounded-xl p-3 text-center">
+              <div class="text-xs text-gray-500 mb-1">Profit</div>
+              <div class="text-lg font-bold text-green-400 font-mono" x-text="moneyFmt(traderProfile?.profile?.profit || 0)"></div>
+            </div>
+            <div class="bg-gray-800/50 rounded-xl p-3 text-center">
+              <div class="text-xs text-gray-500 mb-1">Win Rate</div>
+              <div class="text-lg font-bold font-mono"
+                   :class="((traderProfile?.profile?.closed_positions || 0) - (traderProfile?.profile?.winning_positions || 0)) <= 0 ? 'text-gray-600' :
+                           (traderProfile?.profile?.closed_positions || 0) < 5 ? 'text-gray-500' :
+                           (traderProfile?.profile?.pct_positive || 0) >= 0.6 ? 'text-green-400' :
+                           (traderProfile?.profile?.pct_positive || 0) >= 0.5 ? 'text-gray-200' : 'text-yellow-500'"
+                   x-text="((traderProfile?.profile?.closed_positions || 0) - (traderProfile?.profile?.winning_positions || 0)) <= 0 ? 'N/A' : ((traderProfile?.profile?.pct_positive || 0) * 100).toFixed(1) + '%'"></div>
+              <div class="text-xs" x-text="(traderProfile?.profile?.winning_positions || 0) + 'W / ' + ((traderProfile?.profile?.closed_positions || 0) - (traderProfile?.profile?.winning_positions || 0)) + 'L'"
+                   :class="((traderProfile?.profile?.closed_positions || 0) - (traderProfile?.profile?.winning_positions || 0)) === 0 ? 'text-yellow-700' : 'text-gray-700'"></div>
+              <div x-show="((traderProfile?.profile?.closed_positions || 0) - (traderProfile?.profile?.winning_positions || 0)) === 0 && (traderProfile?.profile?.winning_positions || 0) > 0"
+                   class="text-xs text-yellow-800 mt-0.5">loss data limited</div>
+            </div>
+            <div class="bg-gray-800/50 rounded-xl p-3 text-center">
+              <div class="text-xs text-gray-500 mb-1">Trades</div>
+              <div class="text-lg font-bold text-gray-200" x-text="traderProfile?.profile?.num_trades || 0"></div>
+            </div>
+            <div class="bg-gray-800/50 rounded-xl p-3 text-center">
+              <div class="text-xs text-gray-500 mb-1">Largest Win</div>
+              <div class="text-lg font-bold text-cyan-400 font-mono" x-text="moneyFmt(traderProfile?.profile?.largest_win || 0)"></div>
+            </div>
+          </div>
+
+          <!-- Cumulative PnL Chart -->
+          <div class="mb-6">
+            <h3 class="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-3">Cumulative PnL Over Time</h3>
+            <div class="bg-gray-800/30 rounded-xl p-4 border border-gray-800">
+              <canvas id="traderPnlChart" height="200"></canvas>
+              <div x-show="!traderProfile?.activity?.length"
+                   class="text-center text-gray-600 text-sm py-8">No activity data available for chart.</div>
+            </div>
+          </div>
+
+          <!-- Current Positions -->
+          <div>
+            <h3 class="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-3">
+              Current Positions
+              <span class="text-gray-700 normal-case ml-1" x-text="'(' + (traderProfile?.positions?.length || 0) + ')'"></span>
+            </h3>
+            <div x-show="!traderProfile?.positions?.length"
+                 class="bg-gray-800/30 rounded-xl p-6 text-center text-gray-600 text-sm border border-gray-800">
+              No open positions found.
+            </div>
+            <div x-show="traderProfile?.positions?.length > 0" class="space-y-2 max-h-80 overflow-y-auto scrollbar-hide">
+              <template x-for="pos in traderProfile?.positions || []" :key="pos.market_id + pos.outcome">
+                <div class="bg-gray-800/40 border border-gray-700/50 rounded-lg px-4 py-3 flex items-center gap-3">
+                  <span class="text-xs font-bold px-1.5 py-0.5 rounded leading-none flex-shrink-0"
+                        :class="pos.outcome.toLowerCase() === 'yes' || pos.outcome.toLowerCase() === '1'
+                          ? 'bg-green-950 text-green-400 border border-green-800'
+                          : pos.outcome.toLowerCase() === 'no' || pos.outcome.toLowerCase() === '0'
+                            ? 'bg-red-950 text-red-400 border border-red-800'
+                            : 'bg-cyan-950 text-cyan-400 border border-cyan-800'"
+                        x-text="pos.outcome"></span>
+                  <div class="flex-1 min-w-0">
+                    <div class="text-sm text-gray-200 truncate" x-text="pos.title || pos.market_id"></div>
+                    <div class="text-xs text-gray-600 mt-0.5">
+                      <span x-text="'Entry: ' + pos.avg_price.toFixed(3)"></span>
+                      <span class="mx-1.5">·</span>
+                      <span x-text="'Now: ' + pos.cur_price.toFixed(3)"></span>
+                      <span class="mx-1.5">·</span>
+                      <span x-text="'Size: $' + (pos.size * pos.avg_price).toFixed(0)"></span>
+                    </div>
+                  </div>
+                  <div class="text-right flex-shrink-0">
+                    <div class="text-sm font-bold font-mono"
+                         :class="pos.pnl >= 0 ? 'text-green-400' : 'text-red-400'"
+                         x-text="(pos.pnl >= 0 ? '+' : '') + '$' + pos.pnl.toFixed(2)"></div>
+                    <div class="text-xs text-gray-600"
+                         x-text="pos.avg_price > 0 ? ((pos.cur_price - pos.avg_price) / pos.avg_price * 100).toFixed(1) + '%' : ''"></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function app() {
+      return {
+        activeTab: 'dashboard',
+        state: {
+          state: 'idle', balance: null,
+          signal_count: 0, news_signal_count: 0, volume_signal_count: 0,
+          trader_count: 0, consensus_count: 0,
+          last_scan_at: null, scan_duration_s: null,
+          markets_loaded: 0, error: null, scan_count: 0,
+          scan_stage: '', scan_progress: 0, scan_mode: 'today',
+        },
+        signals: [],
+        traders: [],
+        consensuses: [],
+        picks: [],
+        sidebarPicks: [],
+        picksFilter: 'all',
+        categoryFilter: 'all',
+        subcatFilter: 'all',
+        starredTraders: [],
+        scanTriggering: false,
+        loadingSignals: false,
+        loadingLeaderboard: false,
+        loadingPicks: false,
+        loadingStarred: false,
+        customBalance: null,
+        showBalanceInput: false,
+        riskLevel: 'medium',
+        lbSort: { col: 'score', asc: false },
+        selectedTrader: null,
+        traderProfile: null,
+        loadingProfile: false,
+        _pnlChart: null,
+
+        // Effective balance: custom input overrides wallet balance
+        get effectiveBalance() {
+          if (this.customBalance !== null && this.customBalance > 0) return this.customBalance;
+          return this.state.balance ?? 0;
+        },
+
+        // Bet sizing based on balance, risk level, and pick score/confidence
+        // Returns { amount, pctOfBalance } for a given pick
+        betSize(pick) {
+          const bal = this.effectiveBalance;
+          if (bal <= 0) return { amount: 0, pct: 0 };
+
+          // Risk multipliers: % of balance per bet
+          const riskPcts = { low: 0.02, medium: 0.05, high: 0.10 };  // 2%, 5%, 10% base
+          const basePct = riskPcts[this.riskLevel] || 0.05;
+
+          // Score factor: scale 0.3x–1.5x based on daily_score (0–100)
+          const score = pick.daily_score || 0;
+          const scoreFactor = 0.3 + (score / 100) * 1.2;
+
+          // Confidence factor: scale 0.5x–1.2x
+          const conf = this.confidencePct(pick) / 100;
+          const confFactor = 0.5 + conf * 0.7;
+
+          const pct = Math.min(basePct * scoreFactor * confFactor, 0.25); // cap at 25%
+          const amount = Math.max(1, Math.round(bal * pct * 100) / 100);
+
+          return { amount: Math.min(amount, bal), pct: Math.round(pct * 1000) / 10 };
+        },
+
+        // Sorted leaderboard traders
+        get sortedTraders() {
+          const col = this.lbSort.col;
+          const asc = this.lbSort.asc;
+          const gradeOrder = { 'A': 4, 'B': 3, 'C': 2, 'D': 1, '?': 0 };
+          return [...this.traders].sort((a, b) => {
+            let va, vb;
+            if (col === 'rank') { va = a.score; vb = b.score; return asc ? va - vb : vb - va; }
+            if (col === 'name') { va = (a.name || a.address).toLowerCase(); vb = (b.name || b.address).toLowerCase(); return asc ? va.localeCompare(vb) : vb.localeCompare(va); }
+            if (col === 'grade') { va = gradeOrder[a.consistency_grade] || 0; vb = gradeOrder[b.consistency_grade] || 0; return asc ? va - vb : vb - va; }
+            va = a[col] || 0; vb = b[col] || 0;
+            return asc ? va - vb : vb - va;
+          });
+        },
+
+        sortLeaderboard(col) {
+          if (this.lbSort.col === col) {
+            this.lbSort.asc = !this.lbSort.asc;
+          } else {
+            this.lbSort.col = col;
+            this.lbSort.asc = col === 'name'; // name defaults asc, everything else desc
+          }
+        },
+
+        // Picks resolving TODAY (within 24h), sorted by daily_score
+        get todaysPicks() {
+          return this.picks
+            .filter(p => p.time_category === 'tonight')
+            .sort((a, b) => (b.daily_score || 0) - (a.daily_score || 0))
+            .slice(0, 5);
+        },
+
+        get filteredPicks() {
+          let result = this.picks;
+          if (this.categoryFilter === 'live') {
+            result = result.filter(p => p.time_category === 'tonight');
+          } else if (this.categoryFilter !== 'all') {
+            result = result.filter(p => p.category === this.categoryFilter);
+          }
+          if (this.subcatFilter !== 'all') {
+            result = result.filter(p => p.subcategory === this.subcatFilter);
+          }
+          if (this.picksFilter !== 'all') {
+            result = result.filter(p => p.time_category === this.picksFilter);
+          }
+          return result;
+        },
+
+        // All sport subcategories that have at least one pick
+        get availableSportSubcats() {
+          const sportPicks = this.picks.filter(p => p.category === 'sports' && p.subcategory);
+          const subcats = [...new Set(sportPicks.map(p => p.subcategory))];
+          return subcats.sort();
+        },
+
+        picksFilterCount(cat) {
+          return this.picks.filter(p => p.time_category === cat).length;
+        },
+        categoryCount(cat) {
+          if (cat === 'live') return this.picks.filter(p => p.time_category === 'tonight').length;
+          return this.picks.filter(p => p.category === cat).length;
+        },
+
+        async init() {
+          await this.fetchState();
+          await this.fetchSignals();
+          await this.fetchSidebarPicks();
+          await this.fetchStarred();
+          setInterval(() => this.pollState(), 5000);
+        },
+
+        async pollState() {
+          const prev = this.state.scan_count;
+          await this.fetchState();
+          if (this.state.scan_count > prev) {
+            await Promise.all([
+              this.fetchSignals(),
+              this.fetchSidebarPicks(),
+              this.activeTab === 'leaderboard' ? this.fetchLeaderboard() : Promise.resolve(),
+              this.activeTab === 'picks' ? this.fetchPicks() : Promise.resolve(),
+            ]);
+          }
+        },
+
+        async fetchState() {
+          try {
+            const r = await fetch('/api/state');
+            this.state = await r.json();
+          } catch (_) {}
+        },
+
+        async fetchSidebarPicks() {
+          try {
+            const r = await fetch('/api/picks');
+            const d = await r.json();
+            this.sidebarPicks = (d || [])
+              .sort((a, b) => (b.daily_score || 0) - (a.daily_score || 0))
+              .slice(0, 7);
+          } catch (_) {
+            this.sidebarPicks = [];
+          }
+        },
+
+        async fetchSignals() {
+          this.loadingSignals = true;
+          try {
+            const r = await fetch('/api/signals');
+            this.signals = await r.json();
+          } catch (_) {
+            this.signals = [];
+          } finally {
+            this.loadingSignals = false;
+          }
+        },
+
+        async fetchLeaderboard() {
+          this.loadingLeaderboard = true;
+          try {
+            const r = await fetch('/api/leaderboard');
+            const d = await r.json();
+            this.traders = d.traders || [];
+            this.consensuses = d.consensuses || [];
+          } catch (_) {
+            this.traders = [];
+            this.consensuses = [];
+          } finally {
+            this.loadingLeaderboard = false;
+          }
+        },
+
+        async fetchPicks() {
+          this.loadingPicks = true;
+          try {
+            const r = await fetch('/api/picks');
+            this.picks = await r.json() || [];
+          } catch (_) {
+            this.picks = [];
+          } finally {
+            this.loadingPicks = false;
+          }
+        },
+
+        async fetchStarred() {
+          this.loadingStarred = true;
+          try {
+            const r = await fetch('/api/starred');
+            this.starredTraders = await r.json() || [];
+          } catch (_) {
+            this.starredTraders = [];
+          } finally {
+            this.loadingStarred = false;
+          }
+        },
+
+        async toggleStar(trader) {
+          if (trader.starred) {
+            await fetch('/api/unstar?address=' + encodeURIComponent(trader.address), { method: 'POST' });
+            trader.starred = false;
+          } else {
+            await fetch('/api/star?address=' + encodeURIComponent(trader.address) + '&name=' + encodeURIComponent(trader.name || ''), { method: 'POST' });
+            trader.starred = true;
+          }
+          await this.fetchStarred();
+        },
+
+        async unstarTrader(address) {
+          await fetch('/api/unstar?address=' + encodeURIComponent(address), { method: 'POST' });
+          await this.fetchStarred();
+          // Also update leaderboard view if loaded
+          for (const t of this.traders) {
+            if (t.address === address) t.starred = false;
+          }
+        },
+
+        async switchTab(tab) {
+          this.activeTab = tab;
+          if (tab === 'leaderboard') await this.fetchLeaderboard();
+          else if (tab === 'signals') await this.fetchSignals();
+          else if (tab === 'picks') await this.fetchPicks();
+          else if (tab === 'starred') await this.fetchStarred();
+        },
+
+        async triggerScan() {
+          this.scanTriggering = true;
+          try {
+            await fetch('/api/scan', { method: 'POST' });
+            for (let i = 0; i < 30; i++) {
+              await new Promise(r => setTimeout(r, 2000));
+              await this.fetchState();
+              if (this.state.state !== 'scanning') break;
+            }
+            await Promise.all([
+              this.fetchSignals(),
+              this.fetchSidebarPicks(),
+              this.activeTab === 'leaderboard' ? this.fetchLeaderboard() : Promise.resolve(),
+              this.activeTab === 'picks' ? this.fetchPicks() : Promise.resolve(),
+            ]);
+          } finally {
+            this.scanTriggering = false;
+          }
+        },
+
+        async refreshCurrentTab() {
+          await this.fetchState();
+          await this.fetchSidebarPicks();
+          if (this.activeTab === 'signals') await this.fetchSignals();
+          else if (this.activeTab === 'leaderboard') await this.fetchLeaderboard();
+          else if (this.activeTab === 'picks') await this.fetchPicks();
+          else await this.fetchSignals();
+        },
+
+        // ── Trader Profile ──
+        async openTraderProfile(address) {
+          this.selectedTrader = address;
+          this.loadingProfile = true;
+          this.traderProfile = null;
+          try {
+            const r = await fetch('/api/trader/' + encodeURIComponent(address));
+            this.traderProfile = await r.json();
+            // Render chart after DOM update
+            this.$nextTick(() => this.renderPnlChart());
+          } catch (_) {
+            this.traderProfile = { profile: { address }, positions: [], activity: [] };
+          } finally {
+            this.loadingProfile = false;
+          }
+        },
+
+        closeTraderProfile() {
+          this.selectedTrader = null;
+          this.traderProfile = null;
+          if (this._pnlChart) { this._pnlChart.destroy(); this._pnlChart = null; }
+        },
+
+        renderPnlChart() {
+          const canvas = document.getElementById('traderPnlChart');
+          if (!canvas || !this.traderProfile?.activity?.length) return;
+          if (this._pnlChart) this._pnlChart.destroy();
+
+          const activity = this.traderProfile.activity;
+
+          // Build cumulative PnL data from REDEEM (wins) and trades
+          let cumPnl = 0;
+          const dataPoints = [];
+          const redeemPoints = [];  // separate dataset for win markers
+
+          for (const a of activity) {
+            if (a.type === 'REDEEM') {
+              cumPnl += a.usdcSize;
+              redeemPoints.push({ x: new Date(a.timestamp), y: cumPnl });
+            } else if (a.type === 'TRADE' && a.side === 'BUY') {
+              // TRADE+BUY = spending USDC to acquire tokens (cost)
+              cumPnl -= a.usdcSize;
+            } else if (a.type === 'TRADE' && a.side === 'SELL') {
+              // TRADE+SELL = selling tokens for USDC (revenue)
+              cumPnl += a.usdcSize;
+            }
+            dataPoints.push({ x: new Date(a.timestamp), y: Math.round(cumPnl * 100) / 100 });
+          }
+
+          if (dataPoints.length === 0) return;
+
+          this._pnlChart = new Chart(canvas, {
+            type: 'line',
+            data: {
+              datasets: [
+                {
+                  label: 'Cumulative PnL',
+                  data: dataPoints,
+                  borderColor: cumPnl >= 0 ? '#4ade80' : '#f87171',
+                  backgroundColor: cumPnl >= 0 ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)',
+                  fill: true,
+                  tension: 0.3,
+                  pointRadius: 0,
+                  pointHitRadius: 8,
+                  borderWidth: 2,
+                },
+                {
+                  label: 'Wins',
+                  data: redeemPoints,
+                  borderColor: 'transparent',
+                  backgroundColor: '#22d3ee',
+                  pointRadius: 4,
+                  pointStyle: 'circle',
+                  showLine: false,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              interaction: { mode: 'nearest', intersect: false },
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  backgroundColor: '#1f2937',
+                  titleColor: '#d1d5db',
+                  bodyColor: '#9ca3af',
+                  borderColor: '#374151',
+                  borderWidth: 1,
+                  callbacks: {
+                    label: (ctx) => {
+                      if (ctx.datasetIndex === 1) return 'Win: +$' + (ctx.raw.y || 0).toFixed(2);
+                      return 'PnL: $' + (ctx.raw.y || 0).toFixed(2);
+                    }
+                  }
+                },
+              },
+              scales: {
+                x: {
+                  type: 'time',
+                  time: { unit: 'day', displayFormats: { day: 'MMM d' } },
+                  grid: { color: 'rgba(55,65,81,0.5)' },
+                  ticks: { color: '#6b7280', maxTicksLimit: 8 },
+                },
+                y: {
+                  grid: { color: 'rgba(55,65,81,0.5)' },
+                  ticks: {
+                    color: '#6b7280',
+                    callback: (v) => '$' + v.toLocaleString(),
+                  },
+                },
+              },
+            },
+          });
+        },
+
+        // ── Helpers ──
+        confidencePct(pick) {
+          const total = (pick.yes_weight || 0) + (pick.no_weight || 0);
+          if (!total) return 50;
+          return Math.round(Math.abs((pick.yes_weight || 0) - (pick.no_weight || 0)) / total * 100);
+        },
+
+        categoryEmoji(category, subcategory) {
+          const map = {
+            'nfl': '🏈', 'nba': '🏀', 'mlb': '⚾', 'nhl': '🏒',
+            'soccer': '⚽', 'tennis': '🎾', 'golf': '⛳', 'ufc': '🥊',
+            'esports': '🎮', 'formula-1': '🏎', 'other-sports': '🏅',
+            'sports': '🏆', 'politics': '🏛', 'crypto': '🪙',
+            'entertainment': '🎬', 'other': '📊',
+          };
+          return map[subcategory] || map[category] || '📊';
+        },
+
+        subcatEmoji(subcat) {
+          const map = {
+            'nfl': '🏈', 'nba': '🏀', 'mlb': '⚾', 'nhl': '🏒',
+            'soccer': '⚽', 'tennis': '🎾', 'golf': '⛳', 'ufc': '🥊',
+            'esports': '🎮', 'formula-1': '🏎', 'other-sports': '🏅',
+          };
+          return map[subcat] || '';
+        },
+
+        // ── Formatters ──
+        pctFmt(v) { return (v * 100).toFixed(2) + '%'; },
+        moneyFmt(v) { return '$' + v.toLocaleString(undefined, { maximumFractionDigits: 0 }); },
+        timeAgo(iso) {
+          if (!iso) return 'never';
+          const s = Math.round((Date.now() - new Date(iso)) / 1000);
+          if (s < 60) return s + 's ago';
+          if (s < 3600) return Math.round(s / 60) + 'm ago';
+          return Math.round(s / 3600) + 'h ago';
+        },
+        scoreColor(s) {
+          return s >= 70 ? 'text-green-400' : s >= 45 ? 'text-yellow-400' : 'text-cyan-400';
+        },
+        scoreCircleClass(s) {
+          if (s >= 70) return 'border-green-500 text-green-400';
+          if (s >= 45) return 'border-yellow-500 text-yellow-400';
+          return 'border-cyan-600 text-cyan-400';
+        },
+        gradeClass(grade) {
+          if (grade === 'A') return 'bg-green-950 text-green-400 border border-green-800';
+          if (grade === 'B') return 'bg-yellow-950 text-yellow-400 border border-yellow-800';
+          if (grade === 'C') return 'bg-gray-800 text-gray-400 border border-gray-700';
+          if (grade === 'D') return 'bg-red-950 text-red-400 border border-red-800';
+          return 'bg-gray-800 text-gray-500 border border-gray-700';
+        },
+        typeBadgeClass(t) {
+          if (t === 'MULTI') return 'bg-green-950 text-green-400 border border-green-800';
+          if (t === 'FAIR_VALUE') return 'bg-cyan-950 text-cyan-400 border border-cyan-800';
+          if (t === 'LEADERBOARD') return 'bg-blue-950 text-blue-400 border border-blue-800';
+          if (t === 'NEWS') return 'bg-emerald-950 text-emerald-400 border border-emerald-800';
+          if (t === 'VOLUME_SPIKE') return 'bg-yellow-950 text-yellow-400 border border-yellow-800';
+          return 'bg-purple-950 text-purple-400 border border-purple-800';
+        },
+        sideBadgeClass(s) {
+          if (s === 'YES') return 'bg-green-950 text-green-400 border border-green-800';
+          if (s === 'NO') return 'bg-red-950 text-red-400 border border-red-800';
+          return 'bg-gray-800 text-gray-300 border border-gray-700';
+        },
+        timeBadgeLabel(cat) {
+          const labels = { tonight: 'Tonight', tomorrow: 'Tomorrow', this_week: 'This Week', this_month: 'This Month' };
+          return labels[cat] || null;
+        },
+        timeBadgeClass(cat) {
+          if (cat === 'tonight')    return 'bg-red-950 text-red-300 border border-red-800';
+          if (cat === 'tomorrow')   return 'bg-orange-950 text-orange-300 border border-orange-800';
+          if (cat === 'this_week')  return 'bg-yellow-950 text-yellow-400 border border-yellow-800';
+          if (cat === 'this_month') return 'bg-blue-950 text-blue-400 border border-blue-800';
+          return '';
+        },
+      };
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
+</body>
+</html>

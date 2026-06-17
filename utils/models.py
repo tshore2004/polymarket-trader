@@ -136,6 +136,8 @@ class LeaderboardTrader:
     join_date: Optional[datetime] = None
     closed_positions: int = 0
     winning_positions: int = 0
+    profit_slope: float = 0.0   # $/day from linear regression on cumulative PnL vs time
+    slope_norm: float = 0.5     # normalized 0–1 across current leaderboard (0.5 = no data)
 
     @property
     def profit_per_trade(self) -> float:
@@ -157,17 +159,19 @@ class LeaderboardTrader:
         import math
         trade_score = min(1.0, math.log10(1 + self.num_trades) / math.log10(51))
 
-        # Use real win rate when we have closed position data;
-        # only default to 0.5 when there's genuinely no data.
-        if self.closed_positions >= 3:
-            wr = self.pct_positive  # trust the real rate
-        elif self.closed_positions > 0:
-            # Bayesian shrinkage toward 0.5 for tiny samples
+        # Only use win rate when at least one loss was detected.
+        # Losing positions are cleared from Polymarket's API after resolution,
+        # so 0 detected losses means the apparent 100% is a data artifact.
+        detected_losses = self.closed_positions - self.winning_positions
+        if detected_losses > 0 and self.closed_positions >= 3:
+            wr = self.pct_positive
+        elif detected_losses > 0 and self.closed_positions > 0:
             wr = (self.pct_positive * self.closed_positions + 0.5 * 3) / (self.closed_positions + 3)
         else:
-            wr = 0.5  # no data — neutral assumption
+            wr = 0.5  # no detected losses or no data — neutral assumption
 
-        combined = 0.5 * trade_score + 0.5 * wr
+        # slope_norm=0.5 when no data → neutral contribution
+        combined = 0.35 * trade_score + 0.40 * wr + 0.25 * self.slope_norm
 
         # Enforce minimum closed positions for top grades
         if combined >= 0.75 and self.closed_positions >= 10:
@@ -289,4 +293,44 @@ class ScoreBreakdown:
         return min(
             100.0,
             self.leaderboard + self.fair_value_edge
-            + self.line_movement + self.news_momentum + 
+            + self.line_movement + self.news_momentum + self.urgency,
+        )
+
+    def explain(self) -> str:
+        parts = []
+        if self.leaderboard > 0:
+            parts.append(f"Leaderboard {self.leaderboard:.0f}/30")
+        if self.fair_value_edge > 0:
+            parts.append(f"Edge {self.fair_value_edge:.0f}/30")
+        if self.line_movement > 0:
+            parts.append(f"Momentum {self.line_movement:.0f}/20")
+        if self.news_momentum > 0:
+            parts.append(f"News {self.news_momentum:.0f}/10")
+        if self.urgency > 0:
+            parts.append(f"Urgency {self.urgency:.0f}/10")
+        return " | ".join(parts)
+
+
+@dataclass
+class Signal:
+    market: Market
+    combined_score: float
+    signal_type: SignalType
+    recommended_side: Side
+    recommended_price: float
+    scores: ScoreBreakdown = field(default_factory=ScoreBreakdown)
+    consensus: Optional[MarketConsensus] = None
+    explanation: str = ""
+    fair_value: Optional[float] = None
+    edge_pct: float = 0.0
+
+
+@dataclass
+class TradeResult:
+    success: bool
+    market_question: str
+    side: str
+    price: float
+    size: float
+    order_id: Optional[str] = None
+    error: Optional[str] = None

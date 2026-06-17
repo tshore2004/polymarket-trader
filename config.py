@@ -64,6 +64,9 @@ class Config:
     # ── Fair value / external odds ────────────────────────────────────────────
     odds_api_key: str = ""       # The Odds API key (free tier: 500 req/month)
 
+    # ── Backtest / performance tracking ───────────────────────────────────────
+    backtest_min_score: float = 50.0  # Only log signals scoring above this
+
     @classmethod
     def load(cls) -> Config:
         load_dotenv()
@@ -132,4 +135,5 @@ class Config:
             volume_spike_enabled=opt_bool("VOLUME_SPIKE_ENABLED", True),
             volume_spike_threshold=opt_float("VOLUME_SPIKE_THRESHOLD", 1.5),
             odds_api_key=opt_str("ODDS_API_KEY", ""),
+            backtest_min_score=opt_float("BACKTEST_MIN_SCORE", 50.0),
         )

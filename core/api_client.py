@@ -321,6 +321,50 @@ class PolymarketPublicClient:
         result.sort(key=lambda mm: mm.end_date or now)
         return result
 
+    def get_market_from_clob(self, condition_id: str) -> Optional[Market]:
+        """Fetch a single market from the CLOB API — includes real token prices.
+
+        Used by the resolution poller because the Gamma API doesn't populate
+        token prices in its market objects; without prices, _check_resolution
+        can never detect pinned 0/1 outcomes.
+        """
+        try:
+            data = self._get(f"{_CLOB_BASE}/markets/{condition_id}")
+            if not isinstance(data, dict):
+                return None
+
+            tokens_raw = data.get("tokens", [])
+            if len(tokens_raw) < 2:
+                return None
+
+            tokens = []
+            for t in tokens_raw[:2]:
+                tokens.append(Token(
+                    token_id=str(t.get("token_id", "")),
+                    outcome=str(t.get("outcome", "")),
+                    price=float(t.get("price", 0.0)),
+                ))
+
+            end_date: Optional[datetime] = None
+            raw_date = data.get("end_date_iso") or data.get("end_date")
+            if raw_date:
+                try:
+                    end_date = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+                except Exception:
+                    pass
+
+            return Market(
+                condition_id=condition_id,
+                question=str(data.get("question", "")),
+                tokens=tokens,
+                active=bool(data.get("active", True)),
+                closed=bool(data.get("closed", False)),
+                end_date=end_date,
+            )
+        except Exception as exc:
+            logger.debug("CLOB market fetch failed for %s: %s", condition_id, exc)
+            return None
+
     def get_markets_by_condition_ids(self, condition_ids: list[str]) -> list[Market]:
         """Fetch markets by condition ID — used to resolve trader positions not in the main market list.
 
@@ -330,15 +374,19 @@ class PolymarketPublicClient:
             return []
 
         def _fetch_one(cid: str) -> "Market | None":
-            try:
-                data = self._get(f"{_GAMMA_BASE}/markets", {"condition_ids": cid})
-                raw = data if isinstance(data, list) else data.get("data", [])
-                for m_raw in raw:
-                    parsed = self._parse_market_dict(m_raw)
-                    if parsed and parsed.condition_id == cid:
-                        return parsed
-            except Exception as exc:
-                logger.debug("Failed to fetch market %s: %s", cid, exc)
+            # Try closed markets first (resolution poller needs them), then fall back
+            # to active markets (handles the window between logging and resolution).
+            for extra_params in ({"closed": "true"}, {"active": "true"}):
+                try:
+                    params = {"condition_ids": cid, **extra_params}
+                    data = self._get(f"{_GAMMA_BASE}/markets", params)
+                    raw = data if isinstance(data, list) else data.get("data", [])
+                    for m_raw in raw:
+                        parsed = self._parse_market_dict(m_raw)
+                        if parsed and parsed.condition_id == cid:
+                            return parsed
+                except Exception as exc:
+                    logger.debug("Failed to fetch market %s (%s): %s", cid, extra_params, exc)
             return None
 
         results: list[Market] = []
@@ -576,4 +624,107 @@ class PolymarketPublicClient:
                     pass
 
         stats.winning_positions = len(win_markets)
-        # Sort activity chronologically for
+        # Sort activity chronologically for chart
+        stats.activity_cache.sort(key=lambda a: a["timestamp"])
+
+        # 3) Count losses from positions using cashPnl (the API returns actual
+        #    profit/loss per position). Also detect resolved markets via curPrice
+        #    and redeemable flag as fallbacks.
+        try:
+            data = self._get(
+                f"{_DATA_BASE}/positions",
+                {"user": address, "sizeThreshold": "0", "limit": 500},
+            )
+            positions = data if isinstance(data, list) else data.get("data", [])
+            loss_markets: set[str] = set()
+            for pos in positions:
+                cid = pos.get("conditionId")
+                if not cid or cid in win_markets:
+                    continue
+
+                cp = float(pos.get("curPrice", pos.get("currentPrice", -1)) or -1)
+                cash_pnl = pos.get("cashPnl")
+                redeemable = pos.get("redeemable", False)
+
+                # Primary: use cashPnl on resolved positions (curPrice pinned)
+                if cp in (0.0, 1.0):
+                    # curPrice=0 → the token is worthless, trader lost
+                    if cp == 0.0:
+                        loss_markets.add(cid)
+                    # curPrice=1 and not redeemed → could be a win they haven't
+                    # claimed, or they held the losing side. Check cashPnl.
+                    elif cp == 1.0:
+                        if cash_pnl is not None and float(cash_pnl) < 0:
+                            loss_markets.add(cid)
+                        elif not redeemable:
+                            # Not redeemable + not in win_markets → lost
+                            loss_markets.add(cid)
+                    continue
+
+                # Secondary: use cashPnl on any position with negative realized PnL
+                # in a market that has ended (past end_date)
+                if cash_pnl is not None and float(cash_pnl) < 0:
+                    end_raw = pos.get("endDate") or pos.get("endDateIso")
+                    if end_raw:
+                        try:
+                            ed = datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
+                            if ed < datetime.now(timezone.utc):
+                                loss_markets.add(cid)
+                        except Exception:
+                            pass
+
+            stats.closed_positions = stats.winning_positions + len(loss_markets)
+            stats.losing_positions = len(loss_markets)
+        except Exception as exc:
+            logger.debug("Positions fetch failed for %s: %s", address, exc)
+
+        return stats
+
+    def get_trader_positions(self, address: str) -> list[TraderPosition]:
+        try:
+            data = self._get(
+                f"{_DATA_BASE}/positions",
+                {"user": address, "sizeThreshold": "0", "limit": 500},
+            )
+        except Exception:
+            return []
+
+        positions = []
+        for pos in (data if isinstance(data, list) else data.get("data", [])):
+            size = float(pos.get("size", 0) or 0)
+            if size <= 0:
+                continue
+
+            cur_price_raw = float(pos.get("curPrice", pos.get("currentPrice", -1)) or -1)
+            if cur_price_raw in (0.0, 1.0):
+                continue
+
+            end_date: Optional[datetime] = None
+            for _key in ("endDate", "endDateIso", "end_date"):
+                raw_date = pos.get(_key)
+                if raw_date:
+                    try:
+                        end_date = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+                    else:
+                        break
+
+            positions.append(
+                TraderPosition(
+                    trader_address=address,
+                    market_id=pos.get("conditionId", pos.get("market", "")),
+                    outcome=str(pos.get("outcome", "Yes")),
+                    size=size,
+                    avg_price=float(pos.get("avgPrice", 0) or 0),
+                    current_value=float(pos.get("currentValue", 0) or 0),
+                    title=str(pos.get("title", "") or ""),
+                    slug=str(pos.get("slug", "") or ""),
+                    event_slug=str(pos.get("eventSlug", pos.get("event_slug", "")) or ""),
+                    end_date=end_date,
+                    token_id=str(pos.get("asset", pos.get("tokenId", "")) or ""),
+                    opposite_token_id=str(pos.get("oppositeAsset", "") or ""),
+                    cur_price=float(pos.get("curPrice", pos.get("currentPrice", 0)) or 0),
+                )
+            )
+        return positions

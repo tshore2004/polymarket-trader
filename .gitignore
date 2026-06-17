@@ -7,4 +7,6 @@ __pycache__/
 dist/
 build/
 .venv/
+.fuse_hidden*
 venv/
+.fuse_hidden*

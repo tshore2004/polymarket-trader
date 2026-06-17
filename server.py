@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from config import Config
+from core.backtest import SignalLogger, ResolutionPoller
 from core.executor import TradeExecutor
 from core.scanner import BackgroundScanner
 from core.signal import SignalEngine
@@ -20,6 +21,8 @@ from utils.models import Side
 templates = Jinja2Templates(directory="templates")
 scanner: BackgroundScanner | None = None
 starred_store: StarredTraderStore | None = None
+signal_logger: SignalLogger | None = None
+resolution_poller: ResolutionPoller | None = None
 
 
 def _jsonify(obj: Any) -> Any:
@@ -38,15 +41,28 @@ def _jsonify(obj: Any) -> Any:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner, starred_store
+    global scanner, starred_store, signal_logger, resolution_poller
     config = Config.load()
     engine = SignalEngine(config)
     executor = TradeExecutor(config)
     starred_store = engine._lb.starred
-    scanner = BackgroundScanner(engine, executor, config.scan_interval, scan_mode=config.scan_mode)
+
+    # Backtest infrastructure
+    signal_logger = SignalLogger()
+    resolution_poller = ResolutionPoller(
+        signal_logger, engine._client, poll_interval=1800
+    )
+    resolution_poller.start()
+
+    scanner = BackgroundScanner(
+        engine, executor, config.scan_interval,
+        scan_mode=config.scan_mode, signal_logger=signal_logger,
+        log_min_score=config.backtest_min_score,
+    )
     scanner.start()
     yield
     scanner.stop()
+    resolution_poller.stop()
 
 
 app = FastAPI(title="Polymarket Trader", lifespan=lifespan)
@@ -159,4 +175,199 @@ async def api_leaderboard():
         raw["win_rate"] = round(t.pct_positive, 4)
         raw["join_date"] = t.join_date.isoformat() if t.join_date else None
 
-    consensuses_raw
+    consensuses_raw = _jsonify(snap.consensuses)
+    consensuses = []
+    for raw, con in zip(consensuses_raw, snap.consensuses):
+        raw["confidence"] = round(con.confidence, 4)
+        raw["dominant_side"] = con.dominant_side.value
+        raw["dominant_weight"] = round(con.dominant_weight, 2)
+        consensuses.append(raw)
+
+    return JSONResponse({"traders": traders, "consensuses": consensuses})
+
+
+@app.get("/api/news")
+async def api_news():
+    snap = scanner.get_snapshot()
+    return JSONResponse(_jsonify(snap.news_signals))
+
+
+@app.get("/api/volume")
+async def api_volume():
+    snap = scanner.get_snapshot()
+    return JSONResponse(_jsonify(snap.volume_signals))
+
+
+@app.post("/api/scan")
+async def api_scan(mode: str = Query(default=None)):
+    triggered = scanner.trigger_scan(mode=mode)
+    return JSONResponse({
+        "triggered": triggered,
+        "mode": mode or scanner.get_snapshot().scan_mode,
+        "message": "Scan started." if triggered else "Scan already in progress.",
+    })
+
+
+@app.post("/api/mode")
+async def api_set_mode(mode: str = Query(...)):
+    scanner.set_mode(mode)
+    return JSONResponse({"mode": mode, "message": f"Mode set to {mode!r}."})
+
+
+@app.get("/api/starred")
+async def api_starred():
+    """List all starred traders with their leaderboard stats if available."""
+    snap = scanner.get_snapshot()
+    trader_lookup = {t.address.lower(): t for t in snap.traders}
+    starred = starred_store.get_all()
+    result = []
+    for st in starred:
+        t = trader_lookup.get(st.address.lower())
+        entry = {
+            "address": st.address,
+            "name": st.name,
+            "note": st.note,
+            "starred_at": st.starred_at,
+        }
+        if t:
+            entry.update({
+                "profit": round(t.profit, 2),
+                "volume": round(t.volume, 2),
+                "num_trades": t.num_trades,
+                "pct_positive": round(t.pct_positive, 4),
+                "score": round(t.score, 4),
+                "consistency_grade": t.consistency_grade,
+                "profit_per_trade": round(t.profit_per_trade, 2),
+                "on_leaderboard": True,
+            })
+        else:
+            entry.update({
+                "profit": 0, "volume": 0, "num_trades": 0,
+                "pct_positive": 0, "score": 0,
+                "consistency_grade": "?", "profit_per_trade": 0,
+                "on_leaderboard": False,
+            })
+        result.append(entry)
+    return JSONResponse(result)
+
+
+@app.post("/api/star")
+async def api_star(address: str = Query(...), name: str = Query(default="")):
+    """Star a trader by address."""
+    st = starred_store.star(address, name)
+    return JSONResponse({
+        "starred": True,
+        "address": st.address,
+        "name": st.name,
+        "count": starred_store.count(),
+    })
+
+
+@app.get("/api/trader/{address}")
+async def api_trader_profile(address: str):
+    """Trader profile: stats, current positions, and activity history for charting."""
+    snap = scanner.get_snapshot()
+    trader_lookup = {t.address.lower(): t for t in snap.traders}
+    t = trader_lookup.get(address.lower())
+
+    # Basic stats
+    profile: dict = {}
+    if t:
+        profile = {
+            "address": t.address,
+            "name": t.name,
+            "profit": round(t.profit, 2),
+            "volume": round(t.volume, 2),
+            "num_trades": t.num_trades,
+            "pct_positive": round(t.pct_positive, 4),
+            "score": round(t.score, 4),
+            "consistency_grade": t.consistency_grade,
+            "profit_per_trade": round(t.profit_per_trade, 2),
+            "starred": t.starred,
+            "largest_win": round(t.largest_win, 2),
+            "closed_positions": t.closed_positions,
+            "winning_positions": t.winning_positions,
+            "join_date": t.join_date.isoformat() if t.join_date else None,
+        }
+    else:
+        profile = {"address": address, "name": "", "profit": 0, "score": 0}
+
+    # Current positions from cached data
+    engine = scanner._engine
+    positions_raw = engine._lb._positions.get(address, [])
+    positions = []
+    for pos in positions_raw:
+        if pos.cur_price in (0.0, 1.0):
+            continue  # skip resolved
+        positions.append({
+            "market_id": pos.market_id,
+            "title": pos.title,
+            "outcome": pos.outcome,
+            "size": round(pos.size, 2),
+            "avg_price": round(pos.avg_price, 4),
+            "cur_price": round(pos.cur_price, 4),
+            "current_value": round(pos.current_value, 2),
+            "pnl": round((pos.cur_price - pos.avg_price) * pos.size, 2) if pos.avg_price > 0 else 0,
+        })
+
+    # Activity history for chart — use cached data from scan enrichment
+    activity = engine._lb._activity_cache.get(address, [])
+
+    return JSONResponse({
+        "profile": profile,
+        "positions": positions,
+        "activity": activity,
+    })
+
+
+@app.post("/api/unstar")
+async def api_unstar(address: str = Query(...)):
+    """Unstar a trader."""
+    removed = starred_store.unstar(address)
+    return JSONResponse({
+        "removed": removed,
+        "address": address,
+        "count": starred_store.count(),
+    })
+
+
+# ── Backtest / Performance Tracking ──────────────────────────────────────────
+
+
+@app.get("/api/backtest/performance")
+async def api_backtest_performance():
+    """Aggregate performance stats: win rate, P&L, factor analysis."""
+    return JSONResponse(signal_logger.get_performance())
+
+
+@app.get("/api/backtest/picks")
+async def api_backtest_picks(limit: int = Query(default=50)):
+    """Recent tracked picks with resolution status."""
+    return JSONResponse(signal_logger.get_recent_picks(limit=limit))
+
+
+@app.get("/api/backtest/unresolved")
+async def api_backtest_unresolved():
+    """All picks still awaiting resolution."""
+    return JSONResponse(signal_logger.get_unresolved())
+
+
+@app.post("/api/backtest/poll")
+async def api_backtest_poll():
+    """Manually trigger a resolution poll cycle."""
+    resolved = resolution_poller.poll_once()
+    return JSONResponse({
+        "resolved_this_cycle": resolved,
+        "message": f"Resolved {resolved} pick(s).",
+    })
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    p = argparse.ArgumentParser(description="Polymarket Trader web dashboard")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    args = p.parse_args()
+
+    uvicorn.run("server:app", host=args.host, port=args.port, reload=False)

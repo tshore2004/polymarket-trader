@@ -49,11 +49,15 @@ class BackgroundScanner:
         executor: TradeExecutor,
         scan_interval: int,
         scan_mode: str = "all",
+        signal_logger=None,
+        log_min_score: float = 50.0,
     ) -> None:
         self._engine = engine
         self._executor = executor
         self._scan_interval = scan_interval
         self._scan_mode = scan_mode
+        self._signal_logger = signal_logger
+        self._log_min_score = log_min_score
         self._lock = threading.Lock()
         self._snapshot = ScanSnapshot(scan_mode=scan_mode)
         self._manual_trigger = threading.Event()
@@ -136,6 +140,17 @@ class BackgroundScanner:
                 snap.scan_count += 1
                 snap.scan_stage = ""
                 snap.scan_progress = 100.0
+
+            # Auto-log signals to backtest tracker
+            if self._signal_logger and signals:
+                try:
+                    logged = self._signal_logger.log_signals(
+                        signals, min_score=self._log_min_score
+                    )
+                    if logged:
+                        logger.info("Backtest: logged %d new pick(s).", logged)
+                except Exception as log_exc:
+                    logger.warning("Backtest logging failed: %s", log_exc)
 
             logger.info(
                 "Scan #%d [%s] complete in %.1fs — %d signals, %d traders.",

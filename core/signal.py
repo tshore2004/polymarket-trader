@@ -9,6 +9,7 @@ from core.leaderboard import LeaderboardAnalyzer
 from core.news_sentiment import NewsSentimentAnalyzer
 from core.volume_tracker import VolumeTracker
 from core.fair_value import FairValueAnalyzer
+from utils.categories import detect_market_category
 from utils.models import (
     Market, Signal, SignalType, Side, ScoreBreakdown,
     MarketConsensus,
@@ -277,6 +278,12 @@ class SignalEngine:
         for market in markets:
             if market.time_category == "past" or market.closed or not market.active:
                 continue
+            # Skip markets with pinned token prices — outcome already determined
+            # even if the closed flag hasn't propagated from the API yet.
+            yt = market.yes_token
+            nt = market.no_token
+            if (yt and yt.price >= 0.95) or (nt and nt.price >= 0.95):
+                continue
             mid = market.condition_id
             con = con_by_id.get(mid)
             news_sig = news_by_id.get(mid)
@@ -322,15 +329,26 @@ class SignalEngine:
 
             scores = ScoreBreakdown()
 
-            # 1. Leaderboard conviction (0–30) — driven by the copy-strength score
+            # 1. Leaderboard conviction — category-aware cap
+            # Sports (97% of picks): top traders are price-setters, copying them is lagged.
+            # Non-sports (politics, crypto, news): informed traders have genuine edge.
+            # Calibration at n=100 shows leaderboard anti-predictive in sports, directionally
+            # positive in non-sports. Apply a 0.4x sports discount until n=250 for reanalysis.
             if con:
-                scores.leaderboard = round(min(30.0, 0.30 * con.copy_score), 2)
+                cat, _ = detect_market_category(market)
+                lb_multiplier = 0.4 if cat == "sports" else 1.2
+                scores.leaderboard = round(min(10.0, 0.10 * con.copy_score) * lb_multiplier, 2)
 
             # 2. Get cached midpoint price
             token = market.yes_token if side == Side.YES else market.no_token
             price = 0.5
             if token and token.token_id:
                 price = midpoints.get(token.token_id, 0.5)
+
+            # Skip near-resolved markets (outcome already determined, closed flag lagging)
+            if price <= 0.03 or price >= 0.97:
+                logger.debug("Skipping near-resolved market %s (price=%.3f)", mid, price)
+                continue
 
             # 3. Fair value edge (0–30)
             edge_pct, fair_value, fv_source = self._fv.edge(
@@ -469,4 +487,27 @@ class SignalEngine:
                 signal_type=SignalType.VOLUME_SPIKE,
                 recommended_side=Side.YES,
                 recommended_price=round(price, 4),
-    
+                scores=scores,
+                explanation=explanation,
+            ))
+
+        for market, delta, explanation in price_moves:
+            if market.condition_id in seen:
+                continue
+            seen.add(market.condition_id)
+            raw_score = round(min(10.0, abs(delta) / 0.2 * 10.0), 2)
+            yes = market.yes_token
+            price = yes.price if yes and yes.price > 0 else 0.5
+            side = Side.YES if delta > 0 else Side.NO
+            scores = ScoreBreakdown(line_movement=raw_score)
+            signals.append(Signal(
+                market=market,
+                combined_score=raw_score,
+                signal_type=SignalType.VOLUME_SPIKE,
+                recommended_side=side,
+                recommended_price=round(price, 4),
+                scores=scores,
+                explanation=explanation,
+            ))
+
+        return sorted(signals, key=lambda s: -s.combined_score)
