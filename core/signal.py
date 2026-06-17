@@ -9,6 +9,7 @@ from core.leaderboard import LeaderboardAnalyzer
 from core.news_sentiment import NewsSentimentAnalyzer
 from core.volume_tracker import VolumeTracker
 from core.fair_value import FairValueAnalyzer
+from core.pinnacle import PinnacleClient
 from utils.categories import detect_market_category
 from utils.models import (
     Market, Signal, SignalType, Side, ScoreBreakdown,
@@ -36,7 +37,15 @@ class SignalEngine:
         self._lb = LeaderboardAnalyzer(self._client, config)
         self._news = NewsSentimentAnalyzer(config)
         self._vol = VolumeTracker(config.volume_spike_threshold)
-        self._fv = FairValueAnalyzer(self._client, getattr(config, "odds_api_key", ""))
+        _pinnacle = PinnacleClient(
+            getattr(config, "pinnacle_username", ""),
+            getattr(config, "pinnacle_password", ""),
+        )
+        self._fv = FairValueAnalyzer(
+            self._client,
+            getattr(config, "odds_api_key", ""),
+            pinnacle=_pinnacle if _pinnacle.enabled else None,
+        )
 
         self._markets: list[Market] = []
         self._universe: list[Market] = []

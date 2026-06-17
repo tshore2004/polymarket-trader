@@ -1,9 +1,9 @@
 """FairValueAnalyzer — compares Polymarket odds to external sources to find mispriced markets.
 
-Supports:
-  - The Odds API (sports): set ODDS_API_KEY in .env for sportsbook consensus
-  - Order book depth analysis: detects imbalanced books as a proxy for smart money
-  - Fallback: internal momentum-based fair value when no external data is available
+Supports (in priority order):
+  - Pinnacle (sharp book): set PINNACLE_USERNAME / PINNACLE_PASSWORD — highest accuracy
+  - The Odds API (recreational consensus): set ODDS_API_KEY — good fallback
+  - Order book depth analysis: always available, weaker signal
 """
 from __future__ import annotations
 import logging
@@ -14,6 +14,7 @@ from typing import Optional
 from collections import defaultdict
 
 from core.api_client import PolymarketPublicClient
+from core.pinnacle import PinnacleClient
 from utils.models import Market
 
 logger = logging.getLogger(__name__)
@@ -47,15 +48,25 @@ class FairValueAnalyzer:
 
     _BOOK_CACHE_TTL = 60.0  # seconds
 
-    def __init__(self, client: PolymarketPublicClient, odds_api_key: str = "") -> None:
+    def __init__(
+        self,
+        client: PolymarketPublicClient,
+        odds_api_key: str = "",
+        pinnacle: Optional["PinnacleClient"] = None,
+    ) -> None:
         self._client = client
         self._odds_api_key = odds_api_key
+        self._pinnacle = pinnacle
         self._external_odds: dict[str, dict[str, float]] = {}  # sport_key → {team/outcome: probability}
         self._last_fetch: float = 0.0
         self._book_cache: dict[str, tuple[Optional[float], str, float]] = {}  # key → (fv, source, ts)
 
     def refresh(self) -> None:
-        """Fetch fresh external odds data."""
+        """Fetch fresh external odds data (Pinnacle + The Odds API)."""
+        # Pinnacle is refreshed independently with its own TTL
+        if self._pinnacle and self._pinnacle.enabled:
+            self._pinnacle.refresh()
+
         if not self._odds_api_key:
             return
 
@@ -85,13 +96,21 @@ class FairValueAnalyzer:
         """
         Return (fair_value_probability, source_description) for a market.
         fair_value is 0.0–1.0 or None if we can't estimate.
+
+        Priority: Pinnacle (sharp) → The Odds API (consensus) → order book depth.
         """
-        # Try external odds first (sports markets)
+        # 1. Pinnacle sharp-book odds (most accurate)
+        if self._pinnacle and self._pinnacle.enabled:
+            fv, source = self._try_pinnacle_odds(market)
+            if fv is not None:
+                return fv, source
+
+        # 2. The Odds API consensus
         fv, source = self._try_external_odds(market)
         if fv is not None:
             return fv, source
 
-        # Fallback: order book depth analysis
+        # 3. Fallback: order book depth analysis
         fv, source = self._try_book_depth(market)
         if fv is not None:
             return fv, source
@@ -123,6 +142,23 @@ class FairValueAnalyzer:
             return 0.0
         # Linear scale: 1% edge = 3 points, 10% edge = 30 points
         return min(30.0, edge_pct * 300.0)
+
+    # ── Pinnacle Sharp-Book Odds ─────────────────────────────────────────────
+
+    def _try_pinnacle_odds(self, market: Market) -> tuple[Optional[float], str]:
+        """Match a market question against Pinnacle's cached moneyline odds."""
+        if not self._pinnacle:
+            return None, ""
+
+        question_lower = market.question.lower()
+        all_odds = self._pinnacle.get_all_odds()
+
+        for sport_key, outcomes in all_odds.items():
+            for team_name, prob in outcomes.items():
+                if team_name in question_lower or _fuzzy_match(team_name, question_lower):
+                    return prob, f"Pinnacle ({sport_key}): {prob*100:.1f}%"
+
+        return None, ""
 
     # ── External Odds (The Odds API) ─────────────────────────────────────────
 

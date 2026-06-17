@@ -63,6 +63,8 @@ class Config:
 
     # ── Fair value / external odds ────────────────────────────────────────────
     odds_api_key: str = ""       # The Odds API key (free tier: 500 req/month)
+    pinnacle_username: str = ""  # Pinnacle API username (requires funded account + API access)
+    pinnacle_password: str = ""  # Pinnacle API password
 
     # ── Backtest / performance tracking ───────────────────────────────────────
     backtest_min_score: float = 50.0  # Only log signals scoring above this
@@ -135,5 +137,7 @@ class Config:
             volume_spike_enabled=opt_bool("VOLUME_SPIKE_ENABLED", True),
             volume_spike_threshold=opt_float("VOLUME_SPIKE_THRESHOLD", 1.5),
             odds_api_key=opt_str("ODDS_API_KEY", ""),
+            pinnacle_username=opt_str("PINNACLE_USERNAME", ""),
+            pinnacle_password=opt_str("PINNACLE_PASSWORD", ""),
             backtest_min_score=opt_float("BACKTEST_MIN_SCORE", 50.0),
         )
