@@ -627,56 +627,91 @@ class PolymarketPublicClient:
         # Sort activity chronologically for chart
         stats.activity_cache.sort(key=lambda a: a["timestamp"])
 
-        # 3) Count losses from positions using cashPnl (the API returns actual
-        #    profit/loss per position). Also detect resolved markets via curPrice
-        #    and redeemable flag as fallbacks.
+        # 3) Get accurate win/loss counts from /closed-positions (realizedPnl field).
+        #    This is the right endpoint: losing positions are cleared from /positions
+        #    after resolution so curPrice inference misses most losses. /closed-positions
+        #    is paginated at 50/page so we fetch up to 3 pages (150 positions).
+        closed_positions_ok = False
         try:
-            data = self._get(
-                f"{_DATA_BASE}/positions",
-                {"user": address, "sizeThreshold": "0", "limit": 500},
-            )
-            positions = data if isinstance(data, list) else data.get("data", [])
-            loss_markets: set[str] = set()
-            for pos in positions:
-                cid = pos.get("conditionId")
-                if not cid or cid in win_markets:
-                    continue
-
-                cp = float(pos.get("curPrice", pos.get("currentPrice", -1)) or -1)
-                cash_pnl = pos.get("cashPnl")
-                redeemable = pos.get("redeemable", False)
-
-                # Primary: use cashPnl on resolved positions (curPrice pinned)
-                if cp in (0.0, 1.0):
-                    # curPrice=0 → the token is worthless, trader lost
-                    if cp == 0.0:
-                        loss_markets.add(cid)
-                    # curPrice=1 and not redeemed → could be a win they haven't
-                    # claimed, or they held the losing side. Check cashPnl.
-                    elif cp == 1.0:
-                        if cash_pnl is not None and float(cash_pnl) < 0:
-                            loss_markets.add(cid)
-                        elif not redeemable:
-                            # Not redeemable + not in win_markets → lost
-                            loss_markets.add(cid)
-                    continue
-
-                # Secondary: use cashPnl on any position with negative realized PnL
-                # in a market that has ended (past end_date)
-                if cash_pnl is not None and float(cash_pnl) < 0:
-                    end_raw = pos.get("endDate") or pos.get("endDateIso")
-                    if end_raw:
-                        try:
-                            ed = datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
-                            if ed < datetime.now(timezone.utc):
-                                loss_markets.add(cid)
-                        except Exception:
-                            pass
-
-            stats.closed_positions = stats.winning_positions + len(loss_markets)
-            stats.losing_positions = len(loss_markets)
+            closed_wins: set[str] = set()
+            closed_losses: set[str] = set()
+            _MAX_CLOSED_PAGES = 3
+            for page in range(_MAX_CLOSED_PAGES):
+                data = self._get(
+                    f"{_DATA_BASE}/closed-positions",
+                    {"user": address, "limit": 50, "offset": page * 50,
+                     "sortBy": "TIMESTAMP", "sortDirection": "DESC"},
+                )
+                rows = data if isinstance(data, list) else data.get("data", [])
+                if not rows:
+                    break
+                for pos in rows:
+                    cid = pos.get("conditionId")
+                    if not cid:
+                        continue
+                    pnl = pos.get("realizedPnl")
+                    if pnl is not None:
+                        pnl_f = float(pnl)
+                        if pnl_f > 0:
+                            closed_wins.add(cid)
+                        elif pnl_f < 0:
+                            closed_losses.add(cid)
+                    else:
+                        # realizedPnl missing — fall back to curPrice
+                        cp = float(pos.get("curPrice", -1) or -1)
+                        if cp == 1.0:
+                            closed_wins.add(cid)
+                        elif cp == 0.0:
+                            closed_losses.add(cid)
+                if len(rows) < 50:
+                    break  # reached last page, no need to fetch more
+            closed_positions_ok = bool(closed_wins or closed_losses)
         except Exception as exc:
-            logger.debug("Positions fetch failed for %s: %s", address, exc)
+            logger.debug("Closed-positions fetch failed for %s: %s", address, exc)
+
+        if closed_positions_ok:
+            stats.winning_positions = len(closed_wins)
+            stats.losing_positions = len(closed_losses)
+            stats.closed_positions = len(closed_wins) + len(closed_losses)
+        else:
+            # Fallback: infer losses from /positions using curPrice and cashPnl.
+            # Less reliable — losing positions are cleared after resolution.
+            try:
+                data = self._get(
+                    f"{_DATA_BASE}/positions",
+                    {"user": address, "sizeThreshold": "0", "limit": 500},
+                )
+                positions = data if isinstance(data, list) else data.get("data", [])
+                loss_markets: set[str] = set()
+                for pos in positions:
+                    cid = pos.get("conditionId")
+                    if not cid or cid in win_markets:
+                        continue
+                    cp = float(pos.get("curPrice", pos.get("currentPrice", -1)) or -1)
+                    cash_pnl = pos.get("cashPnl")
+                    redeemable = pos.get("redeemable", False)
+                    if cp in (0.0, 1.0):
+                        if cp == 0.0:
+                            loss_markets.add(cid)
+                        elif cp == 1.0:
+                            if cash_pnl is not None and float(cash_pnl) < 0:
+                                loss_markets.add(cid)
+                            elif not redeemable:
+                                loss_markets.add(cid)
+                        continue
+                    if cash_pnl is not None and float(cash_pnl) < 0:
+                        end_raw = pos.get("endDate") or pos.get("endDateIso")
+                        if end_raw:
+                            try:
+                                ed = datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
+                                if ed < datetime.now(timezone.utc):
+                                    loss_markets.add(cid)
+                            except Exception:
+                                pass
+                stats.closed_positions = stats.winning_positions + len(loss_markets)
+                stats.losing_positions = len(loss_markets)
+            except Exception as exc:
+                logger.debug("Positions fallback fetch failed for %s: %s", address, exc)
 
         return stats
 
