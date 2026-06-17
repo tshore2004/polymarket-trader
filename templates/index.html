@@ -16,14 +16,21 @@
   </script>
   <style>
     [x-cloak] { display: none !important; }
-    .tab-btn { display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.5rem 0.75rem; border-radius: 0.5rem; font-size: 0.875rem; font-weight: 500; transition: background-color 0.15s, color 0.15s; }
-    .tab-active { background-color: #1f2937; color: #fff; }
+    .tab-btn { display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.5rem 0.75rem; border-radius: 0.5rem; font-size: 0.875rem; font-weight: 500; transition: background-color 0.15s, color 0.15s, border-color 0.15s; border-left: 2px solid transparent; }
+    .tab-active { background-color: #1f2937; color: #fff; border-left-color: #22d3ee; padding-left: calc(0.75rem - 1px); }
     .tab-inactive { color: #6b7280; }
     .tab-inactive:hover { color: #d1d5db; background-color: rgba(31,41,55,0.5); }
     .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
     .scrollbar-hide::-webkit-scrollbar { display: none; }
     .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    .gradient-brand { background: linear-gradient(135deg, #22d3ee 0%, #818cf8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .stat-card-cyan   { border-top: 2px solid rgba(34,211,238,0.4); }
+    .stat-card-yellow { border-top: 2px solid rgba(250,204,21,0.4); }
+    .stat-card-gray   { border-top: 2px solid rgba(156,163,175,0.3); }
+    .stat-card-purple { border-top: 2px solid rgba(167,139,250,0.4); }
+    .scan-btn { background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%) !important; }
+    .scan-btn:hover { background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%) !important; }
   </style>
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen" x-data="app()" x-init="init()">
@@ -33,8 +40,15 @@
     <!-- ── Sidebar ── -->
     <aside class="w-72 flex-shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col p-4">
       <div class="mb-6">
-        <div class="text-cyan-400 font-bold text-base tracking-wide">PolyTrader</div>
-        <div class="text-gray-600 text-xs mt-0.5">Dashboard</div>
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center flex-shrink-0">
+            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+          </div>
+          <div>
+            <div class="gradient-brand font-bold text-base tracking-wide">PolyTrader</div>
+            <div class="text-gray-600 text-xs">Dashboard</div>
+          </div>
+        </div>
       </div>
 
       <nav class="flex flex-col gap-1 mb-4">
@@ -231,9 +245,14 @@
           <span class="w-2 h-2 rounded-full flex-shrink-0"
                 :class="state.state==='scanning' ? 'bg-yellow-400 animate-pulse' : state.state==='error' ? 'bg-red-500' : 'bg-green-500'"></span>
           <div>
-            <div class="text-xs font-medium uppercase tracking-wider"
-                 :class="state.state==='scanning' ? 'text-yellow-400' : state.state==='error' ? 'text-red-400' : 'text-green-400'"
-                 x-text="state.state"></div>
+            <div class="flex items-center gap-1.5">
+              <span class="text-xs font-medium uppercase tracking-wider"
+                   :class="state.state==='scanning' ? 'text-yellow-400' : state.state==='error' ? 'text-red-400' : 'text-green-400'"
+                   x-text="state.state"></span>
+              <span x-show="state.scan_mode"
+                    class="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-500 font-mono border border-gray-700"
+                    x-text="state.scan_mode"></span>
+            </div>
             <div class="text-xs text-gray-500"
                  x-text="state.state === 'scanning' && state.scan_stage
                    ? state.scan_stage + ' (' + Math.round(state.scan_progress || 0) + '%)'
@@ -250,10 +269,10 @@
           </button>
           <button @click="triggerScan()"
                   :disabled="state.state === 'scanning' || scanTriggering"
-                  class="px-4 py-1.5 text-sm font-medium rounded transition-colors"
+                  class="px-4 py-1.5 text-sm font-semibold rounded-lg transition-all"
                   :class="state.state === 'scanning' || scanTriggering
                     ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                    : 'bg-cyan-600 hover:bg-cyan-500 text-white'">
+                    : 'scan-btn text-white shadow-md shadow-cyan-900/30'">
             <span x-show="!scanTriggering && state.state !== 'scanning'">Scan Now</span>
             <span x-show="state.state === 'scanning'" x-cloak>Scanning…</span>
             <span x-show="scanTriggering && state.state !== 'scanning'" x-cloak>Triggered…</span>
@@ -275,22 +294,22 @@
 
           <!-- Stat cards -->
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-            <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 stat-card-cyan">
               <div class="text-gray-500 text-xs uppercase tracking-wider mb-1">Signals</div>
               <div class="text-3xl font-bold text-cyan-400" x-text="state.signal_count"></div>
               <div class="text-xs text-gray-600 mt-1">multi-factor score ≥ 15</div>
             </div>
-            <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 stat-card-yellow">
               <div class="text-gray-500 text-xs uppercase tracking-wider mb-1">News Signals</div>
               <div class="text-3xl font-bold text-yellow-400" x-text="state.news_signal_count || 0"></div>
               <div class="text-xs text-gray-600 mt-1">headline matches</div>
             </div>
-            <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 stat-card-gray">
               <div class="text-gray-500 text-xs uppercase tracking-wider mb-1">Markets</div>
               <div class="text-3xl font-bold text-gray-300" x-text="state.markets_loaded"></div>
               <div class="text-xs text-gray-600 mt-1">active &amp; binary</div>
             </div>
-            <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 stat-card-purple">
               <div class="text-gray-500 text-xs uppercase tracking-wider mb-1">Top Traders</div>
               <div class="text-3xl font-bold text-purple-400" x-text="state.trader_count"></div>
               <div class="text-xs text-gray-600 mt-1">tracked on leaderboard</div>
@@ -308,10 +327,12 @@
           <div x-show="loadingSignals" class="text-gray-500 text-sm animate-pulse">Loading…</div>
           <div class="space-y-3" x-show="!loadingSignals">
             <template x-for="sig in signals.slice(0,5)" :key="sig.market.condition_id">
-              <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center gap-4">
-                <div class="flex-shrink-0 w-14 h-14 rounded-full border-2 flex items-center justify-center font-bold text-lg"
-                     :class="scoreCircleClass(sig.combined_score)"
-                     x-text="Math.round(sig.combined_score)"></div>
+              <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center gap-4 hover:border-gray-700 hover:bg-gray-900/80 transition-colors">
+                <div class="flex-shrink-0 w-14 h-14 rounded-full border-2 flex flex-col items-center justify-center font-bold text-lg leading-none"
+                     :class="scoreCircleClass(sig.combined_score)">
+                  <span x-text="Math.round(sig.combined_score)"></span>
+                  <span class="text-xs font-normal opacity-50">/100</span>
+                </div>
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-2 mb-1">
                     <span class="text-xs font-bold px-2 py-0.5 rounded"
@@ -604,10 +625,10 @@
 
                 <!-- Bet recommendation + sizing -->
                 <div class="mb-2 flex items-center gap-3 flex-wrap">
-                  <span class="inline-flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg border"
+                  <span class="inline-flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg border shadow-sm"
                         :class="pick.dominant_side === 'YES'
-                          ? 'bg-green-950 text-green-300 border-green-700'
-                          : 'bg-red-950 text-red-300 border-red-700'">
+                          ? 'bg-gradient-to-r from-green-950 to-green-900/60 text-green-300 border-green-700 shadow-green-900/30'
+                          : 'bg-gradient-to-r from-red-950 to-red-900/60 text-red-300 border-red-700 shadow-red-900/30'">
                     <span>BET</span>
                     <span x-text="pick.recommended_outcome || pick.dominant_side"></span>
                     <span x-show="pick.recommended_price" class="font-mono" x-text="'@ ' + pick.recommended_price"></span>
@@ -721,7 +742,7 @@
                  class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-8">
               <table class="w-full text-sm">
                 <thead>
-                  <tr class="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
+                  <tr class="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider bg-gray-950/40">
                     <th class="text-left px-4 py-3 cursor-pointer select-none hover:text-gray-300 transition-colors"
                         @click="sortLeaderboard('rank')">#
                       <span x-show="lbSort.col === 'rank'" x-text="lbSort.asc ? '▲' : '▼'" class="text-cyan-500 ml-0.5"></span></th>
@@ -751,8 +772,8 @@
                 </thead>
                 <tbody>
                   <template x-for="(t, idx) in sortedTraders" :key="t.address">
-                    <tr class="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors cursor-pointer"
-                        :class="t.starred ? 'bg-yellow-950/20' : ''"
+                    <tr class="border-b border-gray-800/50 hover:bg-gray-800/40 transition-colors cursor-pointer"
+                        :class="t.starred ? 'bg-yellow-950/20' : (idx % 2 === 0 ? '' : 'bg-gray-900/60')"
                         @click="openTraderProfile(t.address)">
                       <td class="px-4 py-3 text-gray-600 text-sm" x-text="idx + 1"></td>
                       <td class="px-4 py-3">
