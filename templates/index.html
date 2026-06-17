@@ -1030,6 +1030,9 @@
                             :class="sig.edge_pct > 0 ? 'text-green-400' : 'text-yellow-500'"
                             x-text="sig.edge_pct ? (sig.edge_pct * 100).toFixed(1) + '%' : ''"></span>
                     </span>
+                    <span x-show="sig.fv_source" class="text-gray-600">Source:
+                      <span class="text-gray-300 font-medium" x-text="sig.fv_source"></span>
+                    </span>
                   </div>
                 </div>
 

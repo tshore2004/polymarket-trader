@@ -322,6 +322,7 @@ class Signal:
     consensus: Optional[MarketConsensus] = None
     explanation: str = ""
     fair_value: Optional[float] = None
+    fv_source: str = ""
     edge_pct: float = 0.0
 
 

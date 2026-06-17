@@ -431,6 +431,7 @@ class SignalEngine:
                 consensus=con,
                 explanation=" | ".join(parts),
                 fair_value=fair_value,
+                fv_source=fv_source,
                 edge_pct=edge_pct,
             ))
 
