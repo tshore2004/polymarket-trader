@@ -58,6 +58,7 @@ class FairValueAnalyzer:
         self._odds_api_key = odds_api_key
         self._pinnacle = pinnacle
         self._external_odds: dict[str, dict[str, float]] = {}  # sport_key → {team/outcome: probability}
+        self._pinnacle_teams: set[str] = set()  # team names whose odds came from Pinnacle via Odds API
         self._last_fetch: float = 0.0
         self._book_cache: dict[str, tuple[Optional[float], str, float]] = {}  # key → (fv, source, ts)
 
@@ -76,21 +77,25 @@ class FairValueAnalyzer:
         self._last_fetch = now
 
         self._external_odds = {}
+        self._pinnacle_teams = set()
         all_sport_keys = [sk for sks in _POLYMARKET_TO_ODDS_API.values() for sk in sks]
         with ThreadPoolExecutor(max_workers=5) as pool:
             futures = {pool.submit(self._fetch_odds_api, sk): sk for sk in all_sport_keys}
             for fut in as_completed(futures):
                 sk = futures[fut]
                 try:
-                    odds = fut.result()
+                    odds, pin_names = fut.result()
                     if odds:
                         self._external_odds[sk] = odds
+                        self._pinnacle_teams.update(pin_names)
                 except Exception as exc:
                     logger.debug("Odds API future failed for %s: %s", sk, exc)
 
         total_outcomes = sum(len(v) for v in self._external_odds.values())
-        logger.info("FairValue: fetched %d sport keys, %d outcomes from The Odds API.",
-                     len(self._external_odds), total_outcomes)
+        logger.info(
+            "FairValue: fetched %d sport keys, %d outcomes (%d from Pinnacle) via The Odds API.",
+            len(self._external_odds), total_outcomes, len(self._pinnacle_teams),
+        )
 
     def estimate_fair_value(self, market: Market) -> tuple[Optional[float], str]:
         """
@@ -162,10 +167,13 @@ class FairValueAnalyzer:
 
     # ── External Odds (The Odds API) ─────────────────────────────────────────
 
-    def _fetch_odds_api(self, sport_key: str) -> dict[str, float]:
-        """Fetch consensus odds from The Odds API. Returns {outcome_name: implied_probability}."""
+    def _fetch_odds_api(self, sport_key: str) -> tuple[dict[str, float], set[str]]:
+        """Fetch odds from The Odds API, preferring Pinnacle when available.
+
+        Returns (odds_dict, pinnacle_team_names).
+        """
         if not self._odds_api_key:
-            return {}
+            return {}, set()
 
         try:
             from curl_cffi import requests as cf_requests
@@ -182,49 +190,71 @@ class FairValueAnalyzer:
             )
             if resp.status_code != 200:
                 logger.debug("Odds API %s returned %d", sport_key, resp.status_code)
-                return {}
+                return {}, set()
 
-            data = resp.json()
-            return self._parse_odds_response(data)
+            return self._parse_odds_response(resp.json())
 
         except Exception as exc:
             logger.debug("Odds API fetch failed for %s: %s", sport_key, exc)
-            return {}
+            return {}, set()
 
     @staticmethod
-    def _parse_odds_response(events: list[dict]) -> dict[str, float]:
+    def _parse_odds_response(events: list[dict]) -> tuple[dict[str, float], set[str]]:
+        """Parse Odds API response, using Pinnacle's line per event when available.
+
+        Pinnacle is a sharp, low-margin book — their implied probabilities are
+        more accurate than a consensus average across recreational sportsbooks.
+        Falls back to consensus average for events Pinnacle doesn't cover.
+
+        Returns (odds_dict, pinnacle_team_names).
         """
-        Average decimal odds across all bookmakers to get consensus implied probability.
-        Returns {team_name_lower: avg_implied_probability}.
-        """
-        outcome_odds: dict[str, list[float]] = defaultdict(list)
+        result: dict[str, float] = {}
+        pinnacle_names: set[str] = set()
 
         for event in events:
-            for bookmaker in event.get("bookmakers", []):
-                for market in bookmaker.get("markets", []):
-                    if market.get("key") != "h2h":
+            bookmakers = event.get("bookmakers", [])
+            pinnacle_bm = next((b for b in bookmakers if b.get("key") == "pinnacle"), None)
+
+            if pinnacle_bm:
+                # Use Pinnacle's line and devig it
+                for mkt in pinnacle_bm.get("markets", []):
+                    if mkt.get("key") != "h2h":
                         continue
-                    for outcome in market.get("outcomes", []):
-                        name = outcome.get("name", "").lower().strip()
-                        price = outcome.get("price", 0)
+                    names, probs = [], []
+                    for o in mkt.get("outcomes", []):
+                        name = o.get("name", "").lower().strip()
+                        price = o.get("price", 0)
                         if name and price > 1.0:
-                            # Decimal odds → implied probability
-                            outcome_odds[name].append(1.0 / price)
+                            names.append(name)
+                            probs.append(1.0 / price)
+                    if probs:
+                        total = sum(probs)
+                        for name, prob in zip(names, probs):
+                            result[name] = round(prob / total, 4)
+                            pinnacle_names.add(name)
+            else:
+                # Consensus average across all bookmakers for this event
+                outcome_odds: dict[str, list[float]] = defaultdict(list)
+                for bm in bookmakers:
+                    for mkt in bm.get("markets", []):
+                        if mkt.get("key") != "h2h":
+                            continue
+                        for o in mkt.get("outcomes", []):
+                            name = o.get("name", "").lower().strip()
+                            price = o.get("price", 0)
+                            if name and price > 1.0:
+                                outcome_odds[name].append(1.0 / price)
+                if outcome_odds:
+                    event_probs = {n: sum(ps) / len(ps) for n, ps in outcome_odds.items()}
+                    total = sum(event_probs.values())
+                    if total > 0:
+                        for name, prob in event_probs.items():
+                            result[name] = round(prob / total, 4)
 
-        result = {}
-        for name, probs in outcome_odds.items():
-            avg = sum(probs) / len(probs)
-            result[name] = round(avg, 4)
-
-        # Normalize probabilities to sum to ~1.0 (remove vig)
-        total = sum(result.values())
-        if total > 0:
-            result = {k: round(v / total, 4) for k, v in result.items()}
-
-        return result
+        return result, pinnacle_names
 
     def _try_external_odds(self, market: Market) -> tuple[Optional[float], str]:
-        """Try to match market question to external odds data."""
+        """Match market question against cached Odds API data."""
         if not self._external_odds:
             return None, ""
 
@@ -232,9 +262,12 @@ class FairValueAnalyzer:
 
         for sport_key, outcomes in self._external_odds.items():
             for team_name, prob in outcomes.items():
-                # Check if the team name appears in the question
                 if team_name in question_lower or _fuzzy_match(team_name, question_lower):
-                    return prob, f"Sportsbook consensus ({sport_key}): {prob*100:.1f}%"
+                    if team_name in self._pinnacle_teams:
+                        source = f"Pinnacle via The Odds API ({sport_key}): {prob*100:.1f}%"
+                    else:
+                        source = f"Sportsbook consensus ({sport_key}): {prob*100:.1f}%"
+                    return prob, source
 
         return None, ""
 
