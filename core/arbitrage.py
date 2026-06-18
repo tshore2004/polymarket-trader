@@ -1,32 +1,42 @@
+"""Arbitrage detection — two strategies:
+
+1. IntraMarketArbDetector — YES_ask + NO_ask < 1 - fee on Polymarket (single-exchange).
+2. CrossPlatformArbScanner — Polymarket vs Kalshi price discrepancies on matched markets.
+"""
 from __future__ import annotations
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
+
 from config import Config
 from core.api_client import PolymarketPublicClient
-from utils.models import Market, OrderBook, ArbOpportunity
+from utils.models import Market, ArbOpportunity, KalshiMarket, ArbitrageOpportunity
 
 logger = logging.getLogger(__name__)
 
+_STOPWORDS = {
+    "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "of",
+    "with", "is", "are", "was", "will", "be", "by", "as", "if", "do",
+    "this", "that", "it", "its", "who", "which", "what", "how", "all",
+    "not", "no", "yes", "over", "from", "up", "out", "per", "via",
+}
 
-class ArbDetector:
+
+# ── Intra-market arb (YES_ask + NO_ask < 1) ──────────────────────────────────
+
+class IntraMarketArbDetector:
     """Detects intra-market arbitrage: YES_ask + NO_ask < 1 - fee."""
 
     def __init__(self, client: PolymarketPublicClient, config: Config) -> None:
         self._client = client
         self._config = config
-        # After 2% taker fee, buying both sides costs (p_y + p_n) * 1.02
-        # Profitable when: (p_y + p_n) * (1 + fee) < 1.0
-        self._breakeven = 1.0 / (1.0 + config.fee_rate)  # ~0.9804
 
     def scan(self, markets: list[Market]) -> list[ArbOpportunity]:
-        # Skip obviously dead markets to cut API calls — volume < $500 rarely have arb
         candidates = [m for m in markets if m.volume >= 500]
-        logger.debug("Arb scan: checking %d/%d markets (volume >= $500)", len(candidates), len(markets))
+        logger.debug("Intra-arb scan: checking %d/%d markets", len(candidates), len(markets))
 
         opportunities: list[ArbOpportunity] = []
-        # 3 workers: balances throughput vs. Cloudflare burst detection on clob.polymarket.com.
-        # More than 3 parallel new-session connections triggers connection resets on Windows.
         with ThreadPoolExecutor(max_workers=3) as pool:
             futures = {pool.submit(self._check, m): m for m in candidates}
             for fut in as_completed(futures):
@@ -35,7 +45,7 @@ class ArbDetector:
                     if opp is not None:
                         opportunities.append(opp)
                 except Exception as exc:
-                    logger.debug("Arb check error: %s", exc)
+                    logger.debug("Intra-arb check error: %s", exc)
 
         return sorted(opportunities, key=lambda o: o.net_profit_pct, reverse=True)
 
@@ -58,12 +68,9 @@ class ArbDetector:
             return None
 
         combined = yes_ask + no_ask
-        # Net profit per dollar after fee: payout($1) - cost - fee
         net = 1.0 - combined * (1.0 + self._config.fee_rate)
-        net_pct = net  # already a fraction of $1
 
-        # Surface even near-arb (net_pct > -min_arb_profit_pct threshold)
-        if net_pct < -self._config.min_arb_profit_pct:
+        if net < -self._config.min_arb_profit_pct:
             return None
 
         return ArbOpportunity(
@@ -71,16 +78,142 @@ class ArbDetector:
             yes_ask=yes_ask,
             no_ask=no_ask,
             combined_cost=combined,
-            net_profit_pct=net_pct,
+            net_profit_pct=net,
             yes_ask_liquidity=yes_book.ask_liquidity,
             no_ask_liquidity=no_book.ask_liquidity,
         )
 
     def score(self, opp: ArbOpportunity) -> float:
-        """Return 0–50 arb score. 50 = 5%+ net profit."""
         if not opp.is_profitable:
-            # near-arb gets partial score (max 10)
             return max(0.0, (opp.net_profit_pct + self._config.min_arb_profit_pct) /
                        self._config.min_arb_profit_pct * 10)
-        # 0.5% net → score 5 … 5%+ net → score 50
         return min(50.0, opp.net_profit_pct / 0.05 * 50)
+
+
+# ── Cross-platform arb (Polymarket vs Kalshi) ─────────────────────────────────
+
+def _keywords(text: str) -> set[str]:
+    tokens = re.findall(r"[a-z]{3,}", text.lower())
+    return {t for t in tokens if t not in _STOPWORDS}
+
+
+def _match_confidence(poly_q: str, kalshi_q: str) -> float:
+    pk = _keywords(poly_q)
+    kk = _keywords(kalshi_q)
+    if not pk or not kk:
+        return 0.0
+    intersection = pk & kk
+    union = pk | kk
+    return len(intersection) / len(union)
+
+
+class CrossPlatformArbScanner:
+    """Finds price discrepancies between matched Polymarket and Kalshi markets."""
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+
+    def find_opportunities(
+        self,
+        poly_markets: list[Market],
+        kalshi_markets: list[KalshiMarket],
+    ) -> list[ArbitrageOpportunity]:
+        opportunities: list[ArbitrageOpportunity] = []
+
+        for km in kalshi_markets:
+            if km.time_category == "past":
+                continue
+            if km.yes_price <= 0 or km.no_price <= 0:
+                continue
+
+            best_match, best_conf = self._best_poly_match(km, poly_markets)
+            if best_match is None or best_conf < 0.75:
+                continue
+
+            yes_tok = best_match.yes_token
+            no_tok = best_match.no_token
+            if not yes_tok or not no_tok:
+                continue
+
+            poly_yes = yes_tok.price
+            poly_no = no_tok.price
+            kalshi_yes = km.yes_price
+            kalshi_no = km.no_price
+            fee = self._config.fee_rate
+
+            # True arb: buy YES on one exchange, NO on the other
+            arb_yes_poly = poly_yes + kalshi_no
+            arb_yes_kalshi = kalshi_yes + poly_no
+
+            if arb_yes_poly * (1 + fee) < 1.0:
+                roi = 1.0 / (arb_yes_poly * (1 + fee)) - 1.0
+                if roi >= self._config.arb_min_roi:
+                    opportunities.append(ArbitrageOpportunity(
+                        question=best_match.question,
+                        poly_ticker=best_match.condition_id,
+                        kalshi_ticker=km.ticker,
+                        poly_action="BUY YES",
+                        kalshi_action="BUY NO",
+                        poly_price=round(poly_yes, 4),
+                        kalshi_price=round(kalshi_no, 4),
+                        roi_pct=round(roi * 100, 2),
+                        arb_type="TRUE_ARB",
+                        match_confidence=round(best_conf, 3),
+                    ))
+                    continue
+
+            if arb_yes_kalshi * (1 + fee) < 1.0:
+                roi = 1.0 / (arb_yes_kalshi * (1 + fee)) - 1.0
+                if roi >= self._config.arb_min_roi:
+                    opportunities.append(ArbitrageOpportunity(
+                        question=best_match.question,
+                        poly_ticker=best_match.condition_id,
+                        kalshi_ticker=km.ticker,
+                        poly_action="BUY NO",
+                        kalshi_action="BUY YES",
+                        poly_price=round(poly_no, 4),
+                        kalshi_price=round(kalshi_yes, 4),
+                        roi_pct=round(roi * 100, 2),
+                        arb_type="TRUE_ARB",
+                        match_confidence=round(best_conf, 3),
+                    ))
+                    continue
+
+            # Soft arb: same-direction price gap
+            yes_gap = abs(poly_yes - kalshi_yes)
+            if yes_gap >= self._config.arb_soft_min_edge:
+                cheaper_on_poly = poly_yes < kalshi_yes
+                opportunities.append(ArbitrageOpportunity(
+                    question=best_match.question,
+                    poly_ticker=best_match.condition_id,
+                    kalshi_ticker=km.ticker,
+                    poly_action="BUY YES" if cheaper_on_poly else "BUY NO",
+                    kalshi_action="BUY YES" if not cheaper_on_poly else "BUY NO",
+                    poly_price=round(poly_yes, 4),
+                    kalshi_price=round(kalshi_yes, 4),
+                    roi_pct=round(-yes_gap * 100, 2),
+                    arb_type="SOFT_ARB",
+                    match_confidence=round(best_conf, 3),
+                ))
+
+        true_arbs = sorted(
+            [o for o in opportunities if o.arb_type == "TRUE_ARB"],
+            key=lambda o: o.roi_pct, reverse=True,
+        )
+        soft_arbs = sorted(
+            [o for o in opportunities if o.arb_type == "SOFT_ARB"],
+            key=lambda o: abs(o.roi_pct), reverse=True,
+        )
+        return true_arbs + soft_arbs
+
+    def _best_poly_match(
+        self, km: KalshiMarket, poly_markets: list[Market]
+    ) -> tuple[Optional[Market], float]:
+        best: Optional[Market] = None
+        best_conf = 0.0
+        for pm in poly_markets:
+            conf = _match_confidence(pm.question, km.title)
+            if conf > best_conf:
+                best_conf = conf
+                best = pm
+        return best, best_conf
