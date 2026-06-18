@@ -274,7 +274,13 @@ class FairValueAnalyzer:
     # ── Order Book Depth Analysis ────────────────────────────────────────────
 
     def _try_book_depth(self, market: Market) -> tuple[Optional[float], str]:
-        """Use order book depth imbalance as weak fair value signal."""
+        """Estimate fair value from near-market order book depth imbalance.
+
+        Compares YES vs NO buying pressure within 8% of the current price.
+        An imbalance shifts fair value by up to ±10% from the market price,
+        giving a realistic edge signal (typically 0–8%) without the ±30-40%
+        distortion caused by summing all bids regardless of price level.
+        """
         yes_tok = market.yes_token
         no_tok = market.no_token
         if not yes_tok or not no_tok:
@@ -296,22 +302,57 @@ class FairValueAnalyzer:
 
         yes_bid_liq = yes_book.bid_liquidity
         no_bid_liq = no_book.bid_liquidity
-
         total_liq = yes_bid_liq + no_bid_liq
-        if total_liq < 100:  # not enough liquidity to read signal
+
+        if total_liq < 100:
             self._book_cache[cache_key] = (None, "", now)
             return None, ""
 
-        fv = yes_bid_liq / total_liq
+        # Anchor on mid-price; fall back to token price if order book is thin
+        yes_bid = yes_book.best_bid
+        yes_ask = yes_book.best_ask
+        if yes_bid is not None and yes_ask is not None:
+            yes_price = (yes_bid + yes_ask) / 2
+        elif yes_tok.price > 0:
+            yes_price = yes_tok.price
+        else:
+            yes_price = 0.5
+
+        # Near-market depth: bids placed within 8% of the current price.
+        # These represent active buying intent and are a reliable pressure signal.
+        window = 0.08
+        no_price = 1.0 - yes_price
+        yes_near = sum(l.size for l in yes_book.bids if l.price >= yes_price - window)
+        no_near = sum(l.size for l in no_book.bids if l.price >= no_price - window)
+        total_near = yes_near + no_near
+
+        if total_near >= 50:
+            # imbalance: +1 = all YES depth, -1 = all NO depth
+            imbalance = (yes_near - no_near) / total_near
+            # Shift fair value by up to ±10% based on near-market depth pressure
+            fv = round(max(0.01, min(0.99, yes_price + imbalance * 0.10)), 4)
+        else:
+            fv = round(yes_price, 4)
+
         source = f"Book depth: YES ${yes_bid_liq:,.0f} / NO ${no_bid_liq:,.0f} → {fv*100:.0f}% implied"
-        result = round(fv, 4)
-        self._book_cache[cache_key] = (result, source, now)
-        return result, source
+        self._book_cache[cache_key] = (fv, source, now)
+        return fv, source
 
 
 def _fuzzy_match(team: str, question: str) -> bool:
-    """Basic fuzzy match — check if all significant words of the team appear in the question."""
-    team_words = [w for w in team.split() if len(w) > 2]
-    if not team_words:
+    """Match a team name against a market question.
+
+    Handles Polymarket's use of nicknames ("Dodgers") vs The Odds API's full
+    names ("Los Angeles Dodgers") by also checking the last word of the team
+    name, which is always the distinctive nickname in US sports naming.
+    """
+    words = team.split()
+    sig_words = [w for w in words if len(w) > 2]
+    if not sig_words:
         return False
-    return all(w in question for w in team_words)
+    # All significant words present (e.g. "chicago bulls" fully in question)
+    if all(w in question for w in sig_words):
+        return True
+    # Nickname only — last word of team name (e.g. "dodgers" from "los angeles dodgers")
+    nickname = words[-1]
+    return len(nickname) > 3 and nickname in question

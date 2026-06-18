@@ -1019,20 +1019,36 @@
                   </div>
                 </div>
 
-                <!-- Fair value info -->
-                <div x-show="sig.fair_value" class="bg-gray-800/60 rounded-lg px-4 py-3 mb-2 text-sm">
-                  <div class="flex flex-wrap gap-4 text-xs">
-                    <span class="text-gray-600">Fair Value:
-                      <span class="text-cyan-300 font-medium font-mono" x-text="sig.fair_value ? sig.fair_value.toFixed(4) : ''"></span>
-                    </span>
-                    <span class="text-gray-600">Edge:
-                      <span class="font-medium font-mono"
-                            :class="sig.edge_pct > 0 ? 'text-green-400' : 'text-yellow-500'"
-                            x-text="sig.edge_pct ? (sig.edge_pct * 100).toFixed(1) + '%' : ''"></span>
-                    </span>
-                    <span x-show="sig.fv_source" class="text-gray-600">Source:
-                      <span class="text-gray-300 font-medium" x-text="sig.fv_source"></span>
-                    </span>
+                <!-- Fair value comparison -->
+                <div x-show="sig.fair_value" class="bg-gray-800/60 rounded-lg px-4 py-3 mb-2">
+                  <!-- Price comparison row -->
+                  <div class="flex items-center gap-2 mb-2">
+                    <div class="flex-1 text-center">
+                      <div class="text-xs text-gray-500 mb-0.5">Polymarket</div>
+                      <div class="text-base font-mono font-bold text-white" x-text="(sig.recommended_price * 100).toFixed(1) + '%'"></div>
+                    </div>
+                    <div class="text-center px-2">
+                      <div class="text-xs font-bold mb-0.5"
+                           :class="sig.edge_pct > 0 ? 'text-green-400' : 'text-yellow-400'"
+                           x-text="sig.edge_pct ? (sig.edge_pct > 0 ? '+' : '') + (sig.edge_pct * 100).toFixed(1) + '%' : '—'"></div>
+                      <div class="text-gray-600 text-sm">↔</div>
+                    </div>
+                    <div class="flex-1 text-center">
+                      <div class="text-xs text-gray-500 mb-0.5">Fair Value</div>
+                      <div class="text-base font-mono font-bold text-cyan-300"
+                           x-text="sig.fair_value ? ((sig.recommended_side === 'NO' ? (1 - sig.fair_value) : sig.fair_value) * 100).toFixed(1) + '%' : ''"></div>
+                    </div>
+                  </div>
+                  <!-- Source label -->
+                  <div x-show="sig.fv_source" class="text-xs border-t border-gray-700/50 pt-1.5 flex items-center gap-1.5">
+                    <template x-if="sig.fv_source && (sig.fv_source.startsWith('Pinnacle') || sig.fv_source.startsWith('Sportsbook'))">
+                      <span class="inline-block w-1.5 h-1.5 rounded-full bg-cyan-500 shrink-0"></span>
+                    </template>
+                    <template x-if="sig.fv_source && !sig.fv_source.startsWith('Pinnacle') && !sig.fv_source.startsWith('Sportsbook')">
+                      <span class="inline-block w-1.5 h-1.5 rounded-full bg-gray-600 shrink-0"></span>
+                    </template>
+                    <span :class="sig.fv_source && (sig.fv_source.startsWith('Pinnacle') || sig.fv_source.startsWith('Sportsbook')) ? 'text-cyan-600' : 'text-gray-600'"
+                          x-text="sig.fv_source"></span>
                   </div>
                 </div>
 
