@@ -335,3 +335,108 @@ class TradeResult:
     size: float
     order_id: Optional[str] = None
     error: Optional[str] = None
+
+
+# ── Intra-market arb model (YES_ask + NO_ask < 1) ────────────────────────────
+
+@dataclass
+class ArbOpportunity:
+    market: Market
+    yes_ask: float
+    no_ask: float
+    combined_cost: float
+    net_profit_pct: float
+    yes_ask_liquidity: float = 0.0
+    no_ask_liquidity: float = 0.0
+
+    @property
+    def is_profitable(self) -> bool:
+        return self.net_profit_pct > 0
+
+
+# ── Kalshi & cross-platform arbitrage models ──────────────────────────────────
+
+@dataclass
+class KalshiMarket:
+    ticker: str
+    title: str
+    category: str
+    yes_price: float       # 0.0–1.0 (converted from Kalshi's 0–99 cents)
+    no_price: float
+    volume: int = 0
+    close_time: Optional[datetime] = None
+    tags: list[str] = field(default_factory=list)
+
+    @property
+    def question(self) -> str:
+        """Alias for compatibility with news/fair-value analyzers."""
+        return self.title
+
+    @property
+    def time_category(self) -> str:
+        if self.close_time is None:
+            return "ongoing"
+        ct = self.close_time
+        if ct.tzinfo is None:
+            ct = ct.replace(tzinfo=timezone.utc)
+        secs = (ct - datetime.now(timezone.utc)).total_seconds()
+        if secs < 0:
+            return "past"
+        if secs < 86_400:
+            return "tonight"
+        if secs < 172_800:
+            return "tomorrow"
+        if secs < 604_800:
+            return "this_week"
+        if secs < 2_592_000:
+            return "this_month"
+        return "later"
+
+    @property
+    def urgency_score(self) -> float:
+        if self.close_time is None:
+            return 0.0
+        ct = self.close_time
+        if ct.tzinfo is None:
+            ct = ct.replace(tzinfo=timezone.utc)
+        secs = (ct - datetime.now(timezone.utc)).total_seconds()
+        if secs <= 0:
+            return 0.0
+        if secs < 86_400:
+            return 1.0
+        if secs < 172_800:
+            return 0.8
+        if secs < 604_800:
+            return 0.5
+        if secs < 2_592_000:
+            return 0.2
+        return 0.0
+
+
+@dataclass
+class KalshiSignal:
+    market: KalshiMarket
+    combined_score: float
+    recommended_side: str      # "YES" or "NO"
+    fair_value: Optional[float]
+    edge_pct: float
+    explanation: str
+    fair_value_score: float = 0.0
+    volume_score: float = 0.0
+    news_score: float = 0.0
+    urgency_score_val: float = 0.0
+
+
+@dataclass
+class ArbitrageOpportunity:
+    """Cross-platform arbitrage opportunity between Polymarket and Kalshi."""
+    question: str              # representative question text
+    poly_ticker: str           # Polymarket condition_id
+    kalshi_ticker: str         # Kalshi ticker
+    poly_action: str           # "BUY YES" or "BUY NO"
+    kalshi_action: str         # "BUY YES" or "BUY NO"
+    poly_price: float          # price on Polymarket leg (0.0–1.0)
+    kalshi_price: float        # price on Kalshi leg (0.0–1.0)
+    roi_pct: float             # expected return (positive = true arb)
+    arb_type: str              # "TRUE_ARB" or "SOFT_ARB"
+    match_confidence: float    # 0.0–1.0 confidence the markets refer to same event

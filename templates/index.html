@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Polymarket Trader</title>
+  <title>OddsEdge</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -45,13 +45,18 @@
             <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
           </div>
           <div>
-            <div class="gradient-brand font-bold text-base tracking-wide">PolyTrader</div>
-            <div class="text-gray-600 text-xs">Dashboard</div>
+            <div class="gradient-brand font-bold text-base tracking-wide">OddsEdge</div>
+            <div class="text-gray-600 text-xs">Prediction Markets</div>
           </div>
         </div>
       </div>
 
       <nav class="flex flex-col gap-1 mb-4">
+        <!-- ── Polymarket section ── -->
+        <div class="flex items-center gap-2 px-2 pt-1 pb-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-cyan-500"></span>
+          <span class="text-[10px] font-bold uppercase tracking-widest text-gray-500">Polymarket</span>
+        </div>
         <button class="tab-btn" :class="activeTab==='dashboard' ? 'tab-active' : 'tab-inactive'"
                 @click="switchTab('dashboard')">
           <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
@@ -85,6 +90,39 @@
           <span x-show="starredTraders.length > 0"
                 class="ml-auto bg-yellow-900 text-yellow-300 text-xs px-1.5 py-0.5 rounded-full"
                 x-text="starredTraders.length"></span>
+        </button>
+
+        <!-- ── Kalshi section ── -->
+        <div class="flex items-center gap-2 px-2 pt-3 pb-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+          <span class="text-[10px] font-bold uppercase tracking-widest text-gray-500">Kalshi</span>
+        </div>
+        <button class="tab-btn" :class="activeTab==='kalshi' && kalshiView==='signals' ? 'tab-active' : 'tab-inactive'"
+                @click="switchTab('kalshi'); kalshiView='signals'">
+          <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+          Signals
+          <span x-show="kalshiSignals.length > 0"
+                class="ml-auto bg-indigo-900 text-indigo-300 text-xs px-1.5 py-0.5 rounded-full"
+                x-text="kalshiSignals.length"></span>
+        </button>
+        <button class="tab-btn" :class="activeTab==='kalshi' && kalshiView==='movers' ? 'tab-active' : 'tab-inactive'"
+                @click="switchTab('kalshi'); kalshiView='movers'">
+          <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+          Top Movers
+        </button>
+
+        <!-- ── Cross-platform section ── -->
+        <div class="flex items-center gap-2 px-2 pt-3 pb-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+          <span class="text-[10px] font-bold uppercase tracking-widest text-gray-500">Cross-Platform</span>
+        </div>
+        <button class="tab-btn" :class="activeTab==='arbitrage' ? 'tab-active' : 'tab-inactive'"
+                @click="switchTab('arbitrage')">
+          <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+          Arbitrage
+          <span x-show="trueArbCount > 0"
+                class="ml-auto bg-red-900 text-red-300 text-xs px-1.5 py-0.5 rounded-full"
+                x-text="trueArbCount"></span>
         </button>
       </nav>
 
@@ -193,9 +231,10 @@
 
         <!-- Scan progress bar -->
         <div x-show="state.state === 'scanning'"
-             class="absolute bottom-0 left-0 right-0 h-0.5 bg-gray-800 overflow-hidden">
-          <div class="h-full bg-yellow-400 transition-all duration-700 ease-out"
-               :style="'width: ' + (state.scan_progress || 5) + '%'"></div>
+             class="absolute bottom-0 left-0 right-0 h-1 bg-gray-800/60 overflow-hidden">
+          <div class="h-full rounded-full transition-all duration-700 ease-out"
+               :class="(state.scan_progress || 0) < 30 ? 'bg-gradient-to-r from-cyan-500 via-indigo-500 to-purple-500 animate-pulse' : 'bg-gradient-to-r from-cyan-400 via-indigo-400 to-emerald-400'"
+               :style="'width: ' + Math.max(4, state.scan_progress || 4) + '%'"></div>
         </div>
 
         <!-- Balance -->
@@ -1077,6 +1116,232 @@
           </div>
         </div>
 
+        <!-- ═══════════════════ KALSHI TAB ═══════════════════ -->
+        <div x-show="activeTab === 'kalshi'" x-cloak>
+          <div class="flex items-center justify-between mb-6">
+            <div>
+              <h2 class="text-xl font-bold text-white" x-text="kalshiView === 'movers' ? 'Kalshi — Top Movers' : 'Kalshi — Signals'"></h2>
+              <p class="text-sm text-gray-500 mt-0.5" x-text="kalshiView === 'movers' ? 'Most active markets ranked by trading volume' : 'Signal scores from fair value, volume, news & urgency'"></p>
+            </div>
+            <div class="flex items-center gap-3">
+              <span x-show="!kalshiState.has_api_key" class="text-xs text-gray-500 px-2 py-1 rounded bg-gray-800 border border-gray-700">Read-only · no trading key</span>
+              <div x-show="kalshiState.state === 'scanning'" class="flex items-center gap-2 text-cyan-400 text-sm">
+                <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                Scanning…
+              </div>
+              <button @click="triggerKalshiScan()"
+                      class="px-3 py-1.5 text-sm rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white transition-colors">
+                Scan Now
+              </button>
+            </div>
+          </div>
+
+          <!-- Disabled state -->
+          <div x-show="!kalshiState.enabled" class="text-center py-16">
+            <div class="w-14 h-14 rounded-2xl bg-indigo-950 border border-indigo-800 flex items-center justify-center mx-auto mb-4">
+              <svg class="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 5.636a9 9 0 010 12.728M5.636 5.636a9 9 0 000 12.728m12.728 0L5.636 5.636"/></svg>
+            </div>
+            <div class="text-gray-300 font-semibold text-lg">Kalshi Scanning Disabled</div>
+            <div class="text-gray-500 text-sm mt-2 max-w-md mx-auto">Set <code class="bg-gray-800 px-1 rounded text-cyan-400">KALSHI_ENABLED=true</code> in your <code class="bg-gray-800 px-1 rounded text-cyan-400">.env</code> and restart.</div>
+          </div>
+
+          <!-- Loading / empty -->
+          <div x-show="kalshiState.enabled && kalshiView === 'signals' && kalshiSignals.length === 0 && kalshiState.state !== 'scanning'" class="text-center py-16 text-gray-600">
+            No Kalshi markets loaded yet — click "Scan Now" to fetch markets.
+          </div>
+
+          <!-- Signals view -->
+          <div x-show="kalshiView === 'signals' && kalshiSignals.length > 0" class="grid gap-4">
+            <template x-for="(sig, i) in kalshiSignals" :key="sig.market.ticker || String(i)">
+              <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                <div class="flex items-start justify-between gap-4">
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="text-xs text-gray-500 font-mono" x-text="sig.market.ticker"></span>
+                      <span class="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700" x-text="sig.market.category || 'other'"></span>
+                      <span x-show="sig.market.time_category && sig.market.time_category !== 'ongoing' && sig.market.time_category !== 'later'"
+                            class="text-xs px-1.5 py-0.5 rounded border"
+                            :class="timeBadgeClass(sig.market.time_category)"
+                            x-text="timeBadgeLabel(sig.market.time_category) || sig.market.time_category"></span>
+                    </div>
+                    <div class="text-white font-medium leading-snug line-clamp-2" x-text="sig.market.title"></div>
+                    <div class="mt-2 text-xs text-gray-500" x-text="sig.explanation"></div>
+                  </div>
+                  <div class="flex-shrink-0 text-center">
+                    <div class="w-14 h-14 rounded-full border-2 flex items-center justify-center font-bold text-lg"
+                         :class="scoreCircleClass(sig.combined_score)">
+                      <span x-text="Math.round(sig.combined_score)"></span>
+                    </div>
+                    <div class="text-xs mt-1 font-semibold px-2 py-0.5 rounded border"
+                         :class="sig.recommended_side === 'YES' ? 'bg-green-950 text-green-400 border-green-800' : 'bg-red-950 text-red-400 border-red-800'"
+                         x-text="sig.recommended_side"></div>
+                  </div>
+                </div>
+
+                <!-- Prices + edge -->
+                <div class="mt-3 flex items-center gap-4 text-sm">
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-gray-500">YES</span>
+                    <span class="font-mono text-green-400" x-text="((sig.market.yes_price || 0) * 100).toFixed(1) + '¢'"></span>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-gray-500">NO</span>
+                    <span class="font-mono text-red-400" x-text="((sig.market.no_price || 0) * 100).toFixed(1) + '¢'"></span>
+                  </div>
+                  <template x-if="sig.fair_value !== null && sig.fair_value !== undefined">
+                    <div class="flex items-center gap-1.5 ml-2 border-l border-gray-700 pl-3">
+                      <span class="text-gray-500">Fair</span>
+                      <span class="font-mono text-cyan-400" x-text="((sig.fair_value || 0) * 100).toFixed(1) + '¢'"></span>
+                      <span x-show="sig.edge_pct > 0" class="text-xs text-green-400" x-text="'+' + (sig.edge_pct * 100).toFixed(1) + '% edge'"></span>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- Score bars -->
+                <div class="mt-3 grid grid-cols-4 gap-2 text-xs">
+                  <div>
+                    <div class="flex justify-between text-gray-500 mb-0.5"><span>Fair Value</span><span x-text="sig.fair_value_score?.toFixed(0) + '/40'"></span></div>
+                    <div class="h-1 bg-gray-800 rounded-full"><div class="h-1 bg-cyan-500 rounded-full" :style="'width:' + Math.min(100, (sig.fair_value_score || 0) / 40 * 100) + '%'"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex justify-between text-gray-500 mb-0.5"><span>Volume</span><span x-text="sig.volume_score?.toFixed(0) + '/30'"></span></div>
+                    <div class="h-1 bg-gray-800 rounded-full"><div class="h-1 bg-yellow-500 rounded-full" :style="'width:' + Math.min(100, (sig.volume_score || 0) / 30 * 100) + '%'"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex justify-between text-gray-500 mb-0.5"><span>News</span><span x-text="sig.news_score?.toFixed(0) + '/15'"></span></div>
+                    <div class="h-1 bg-gray-800 rounded-full"><div class="h-1 bg-emerald-500 rounded-full" :style="'width:' + Math.min(100, (sig.news_score || 0) / 15 * 100) + '%'"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex justify-between text-gray-500 mb-0.5"><span>Urgency</span><span x-text="sig.urgency_score_val?.toFixed(0) + '/15'"></span></div>
+                    <div class="h-1 bg-gray-800 rounded-full"><div class="h-1 bg-purple-500 rounded-full" :style="'width:' + Math.min(100, (sig.urgency_score_val || 0) / 15 * 100) + '%'"></div></div>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Top Movers view -->
+          <div x-show="kalshiView === 'movers'" class="grid gap-2">
+            <template x-for="(sig, i) in kalshiMovers" :key="sig.market.ticker">
+              <div class="flex items-center gap-4 bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 hover:border-gray-700 transition-colors">
+                <div class="text-gray-600 font-bold tabular-nums w-6 text-center" x-text="i + 1"></div>
+                <div class="flex-1 min-w-0">
+                  <div class="text-white font-medium truncate" x-text="sig.market.title"></div>
+                  <div class="flex items-center gap-2 mt-0.5">
+                    <span class="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700" x-text="sig.market.category || 'other'"></span>
+                    <span class="text-xs text-gray-600 font-mono" x-text="sig.market.ticker"></span>
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="text-sm font-mono"><span class="text-green-400" x-text="((sig.market.yes_price || 0) * 100).toFixed(0) + '¢'"></span><span class="text-gray-600 mx-1">/</span><span class="text-red-400" x-text="((sig.market.no_price || 0) * 100).toFixed(0) + '¢'"></span></div>
+                  <div class="text-xs text-gray-500 mt-0.5">YES / NO</div>
+                </div>
+                <div class="text-right w-24">
+                  <div class="text-indigo-300 font-bold tabular-nums" x-text="fmtVol(sig.market.volume)"></div>
+                  <div class="text-xs text-gray-500 mt-0.5">volume</div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- ═══════════════════ ARBITRAGE TAB ═══════════════════ -->
+        <div x-show="activeTab === 'arbitrage'" x-cloak>
+          <div class="flex items-center justify-between mb-6">
+            <div>
+              <h2 class="text-xl font-bold text-white">Cross-Platform Arbitrage</h2>
+              <p class="text-sm text-gray-500 mt-0.5">Price discrepancies between Polymarket and Kalshi</p>
+            </div>
+            <button @click="fetchArbitrageOpportunities()" class="px-3 py-1.5 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-white transition-colors">
+              Refresh
+            </button>
+          </div>
+
+          <div x-show="arbOpportunities.length === 0" class="text-center py-16">
+            <div class="w-14 h-14 rounded-2xl bg-gray-900 border border-gray-700 flex items-center justify-center mx-auto mb-4">
+              <svg class="w-7 h-7 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+            </div>
+            <div class="text-gray-400 font-semibold">No Arbitrage Opportunities Found</div>
+            <div class="text-gray-600 text-sm mt-1">Run a Polymarket scan and a Kalshi scan so both sides have markets to compare, then hit Refresh.</div>
+          </div>
+
+          <!-- True Arb section -->
+          <div x-show="trueArbCount > 0" class="mb-6">
+            <div class="flex items-center gap-2 mb-3">
+              <div class="w-2 h-2 rounded-full bg-green-400"></div>
+              <h3 class="text-green-400 font-semibold text-sm uppercase tracking-wider">True Arbitrage</h3>
+              <span class="text-xs text-green-600 ml-1">Risk-free profit after fees</span>
+            </div>
+            <div class="grid gap-3">
+              <template x-for="(opp, i) in arbOpportunities.filter(o => o.arb_type === 'TRUE_ARB')" :key="i">
+                <div class="bg-green-950 border border-green-800 rounded-xl p-4">
+                  <div class="flex items-start justify-between gap-4">
+                    <div class="flex-1 min-w-0">
+                      <div class="text-white font-medium line-clamp-2" x-text="opp.question"></div>
+                      <div class="mt-2 flex flex-wrap gap-3 text-sm">
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-gray-400">Polymarket:</span>
+                          <span class="font-mono text-white" x-text="opp.poly_action"></span>
+                          <span class="font-mono text-cyan-400" x-text="'@ ' + (opp.poly_price * 100).toFixed(1) + '¢'"></span>
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-gray-400">Kalshi:</span>
+                          <span class="font-mono text-white" x-text="opp.kalshi_action"></span>
+                          <span class="font-mono text-indigo-400" x-text="'@ ' + (opp.kalshi_price * 100).toFixed(1) + '¢'"></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="flex-shrink-0 text-right">
+                      <div class="text-green-400 font-bold text-xl" x-text="'+' + opp.roi_pct.toFixed(2) + '%'"></div>
+                      <div class="text-xs text-gray-500 mt-0.5">ROI</div>
+                      <div class="text-xs text-gray-600 mt-1" x-text="'Match: ' + (opp.match_confidence * 100).toFixed(0) + '%'"></div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Soft Arb section -->
+          <div x-show="softArbCount > 0">
+            <div class="flex items-center gap-2 mb-3">
+              <div class="w-2 h-2 rounded-full bg-yellow-400"></div>
+              <h3 class="text-yellow-400 font-semibold text-sm uppercase tracking-wider">Mispricing Alerts</h3>
+              <span class="text-xs text-yellow-600 ml-1">Significant price gap on same event</span>
+            </div>
+            <div class="grid gap-3">
+              <template x-for="(opp, i) in arbOpportunities.filter(o => o.arb_type === 'SOFT_ARB')" :key="i">
+                <div class="bg-yellow-950 border border-yellow-800 rounded-xl p-4">
+                  <div class="flex items-start justify-between gap-4">
+                    <div class="flex-1 min-w-0">
+                      <div class="text-white font-medium line-clamp-2" x-text="opp.question"></div>
+                      <div class="mt-2 flex flex-wrap gap-4 text-sm">
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-gray-400">Polymarket YES:</span>
+                          <span class="font-mono text-cyan-400" x-text="(opp.poly_price * 100).toFixed(1) + '¢'"></span>
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-gray-400">Kalshi YES:</span>
+                          <span class="font-mono text-indigo-400" x-text="(opp.kalshi_price * 100).toFixed(1) + '¢'"></span>
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-gray-400">Cheaper on:</span>
+                          <span class="font-semibold text-yellow-300" x-text="opp.poly_price < opp.kalshi_price ? 'Polymarket' : 'Kalshi'"></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="flex-shrink-0 text-right">
+                      <div class="text-yellow-400 font-bold text-xl" x-text="Math.abs(opp.roi_pct).toFixed(1) + '%'"></div>
+                      <div class="text-xs text-gray-500 mt-0.5">Gap</div>
+                      <div class="text-xs text-gray-600 mt-1" x-text="'Match: ' + (opp.match_confidence * 100).toFixed(0) + '%'"></div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
       </div><!-- /p-6 -->
     </main>
   </div><!-- /flex -->
@@ -1197,6 +1462,7 @@
           </div>
         </div>
       </div>
+
     </div>
   </div>
 
@@ -1221,6 +1487,12 @@
         categoryFilter: 'all',
         subcatFilter: 'all',
         starredTraders: [],
+        kalshiSignals: [],
+        kalshiView: 'signals',
+        arbOpportunities: [],
+        kalshiState: { state: 'idle', has_api_key: false, markets_loaded: 0, signal_count: 0, enabled: true },
+        loadingKalshi: false,
+        loadingArb: false,
         scanTriggering: false,
         loadingSignals: false,
         loadingLeaderboard: false,
@@ -1278,6 +1550,17 @@
             va = a[col] || 0; vb = b[col] || 0;
             return asc ? va - vb : vb - va;
           });
+        },
+
+        get trueArbCount() { return this.arbOpportunities.filter(o => o.arb_type === 'TRUE_ARB').length; },
+        get softArbCount() { return this.arbOpportunities.filter(o => o.arb_type === 'SOFT_ARB').length; },
+        get kalshiMovers() { return [...this.kalshiSignals].sort((a, b) => (b.market.volume || 0) - (a.market.volume || 0)); },
+
+        fmtVol(v) {
+          v = v || 0;
+          if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+          if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+          return Math.round(v).toString();
         },
 
         sortLeaderboard(col) {
@@ -1445,6 +1728,36 @@
           else if (tab === 'signals') await this.fetchSignals();
           else if (tab === 'picks') await this.fetchPicks();
           else if (tab === 'starred') await this.fetchStarred();
+          else if (tab === 'kalshi') await this.fetchKalshiSignals();
+          else if (tab === 'arbitrage') await this.fetchArbitrageOpportunities();
+        },
+
+        async fetchKalshiSignals() {
+          this.loadingKalshi = true;
+          try {
+            const [stateR, sigsR] = await Promise.all([
+              fetch('/api/kalshi/state'),
+              fetch('/api/kalshi/signals'),
+            ]);
+            this.kalshiState = await stateR.json();
+            this.kalshiSignals = await sigsR.json();
+          } catch (_) {} finally { this.loadingKalshi = false; }
+        },
+
+        async fetchArbitrageOpportunities() {
+          this.loadingArb = true;
+          try {
+            const r = await fetch('/api/arbitrage');
+            this.arbOpportunities = await r.json();
+          } catch (_) {} finally { this.loadingArb = false; }
+        },
+
+        async triggerKalshiScan() {
+          try {
+            await fetch('/api/kalshi/scan', { method: 'POST' });
+            await new Promise(r => setTimeout(r, 3000));
+            await this.fetchKalshiSignals();
+          } catch (_) {}
         },
 
         async triggerScan() {

@@ -11,8 +11,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from config import Config
+from core.arbitrage import CrossPlatformArbScanner
 from core.backtest import SignalLogger, ResolutionPoller
 from core.executor import TradeExecutor
+from core.kalshi_scanner import KalshiScanner
 from core.scanner import BackgroundScanner
 from core.signal import SignalEngine
 from core.starred_traders import StarredTraderStore
@@ -20,6 +22,8 @@ from utils.models import Side
 
 templates = Jinja2Templates(directory="templates")
 scanner: BackgroundScanner | None = None
+kalshi_scanner: KalshiScanner | None = None
+arb_scanner: CrossPlatformArbScanner | None = None
 starred_store: StarredTraderStore | None = None
 signal_logger: SignalLogger | None = None
 resolution_poller: ResolutionPoller | None = None
@@ -41,13 +45,12 @@ def _jsonify(obj: Any) -> Any:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner, starred_store, signal_logger, resolution_poller
+    global scanner, kalshi_scanner, arb_scanner, starred_store, signal_logger, resolution_poller
     config = Config.load()
     engine = SignalEngine(config)
     executor = TradeExecutor(config)
     starred_store = engine._lb.starred
 
-    # Backtest infrastructure
     signal_logger = SignalLogger()
     resolution_poller = ResolutionPoller(
         signal_logger, engine._client, poll_interval=1800
@@ -60,12 +63,19 @@ async def lifespan(app: FastAPI):
         log_min_score=config.backtest_min_score,
     )
     scanner.start()
+
+    kalshi_scanner = KalshiScanner(config)
+    kalshi_scanner.start()
+
+    arb_scanner = CrossPlatformArbScanner(config)
+
     yield
     scanner.stop()
+    kalshi_scanner.stop()
     resolution_poller.stop()
 
 
-app = FastAPI(title="Polymarket Trader", lifespan=lifespan)
+app = FastAPI(title="OddsEdge", lifespan=lifespan)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -362,10 +372,67 @@ async def api_backtest_poll():
     })
 
 
+# ── Kalshi endpoints ──────────────────────────────────────────────────────────
+
+
+@app.get("/api/kalshi/state")
+async def api_kalshi_state():
+    snap = kalshi_scanner.get_snapshot()
+    return JSONResponse({
+        "state": snap.state.value,
+        "enabled": snap.enabled,
+        "markets_loaded": snap.markets_loaded,
+        "signal_count": len(snap.signals),
+        "last_scan_at": snap.last_scan_at.isoformat() if snap.last_scan_at else None,
+        "scan_duration_s": snap.scan_duration_s,
+        "error": snap.error,
+        "has_api_key": kalshi_scanner._client.enabled,
+    })
+
+
+@app.get("/api/kalshi/signals")
+async def api_kalshi_signals():
+    snap = kalshi_scanner.get_snapshot()
+    return JSONResponse(_jsonify(snap.signals))
+
+
+@app.post("/api/kalshi/scan")
+async def api_kalshi_scan():
+    triggered = kalshi_scanner.trigger_scan()
+    return JSONResponse({
+        "triggered": triggered,
+        "message": "Kalshi scan started." if triggered else "Kalshi scanner not available (missing API key).",
+    })
+
+
+# ── Cross-platform arbitrage endpoint ─────────────────────────────────────────
+
+
+@app.get("/api/arbitrage")
+async def api_arbitrage():
+    poly_snap = scanner.get_snapshot()
+    kalshi_snap = kalshi_scanner.get_snapshot()
+
+    # Gather Polymarket markets from current signals + picks
+    poly_markets = list({
+        s.market.condition_id: s.market
+        for s in poly_snap.signals
+    }.values())
+    # Also include markets from picks
+    for p in poly_snap.picks:
+        if p.market.condition_id not in {m.condition_id for m in poly_markets}:
+            poly_markets.append(p.market)
+
+    kalshi_markets = [sig.market for sig in kalshi_snap.signals]
+
+    opportunities = arb_scanner.find_opportunities(poly_markets, kalshi_markets)
+    return JSONResponse(_jsonify(opportunities))
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    p = argparse.ArgumentParser(description="Polymarket Trader web dashboard")
+    p = argparse.ArgumentParser(description="OddsEdge — prediction market scanner")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args()

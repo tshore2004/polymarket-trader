@@ -69,6 +69,18 @@ class Config:
     # ── Backtest / performance tracking ───────────────────────────────────────
     backtest_min_score: float = 50.0  # Only log signals scoring above this
 
+    # ── Intra-market arb (YES+NO < 1) ─────────────────────────────────────────
+    min_arb_profit_pct: float = 0.005  # surface near-arb within 0.5% of profit
+
+    # ── Kalshi integration ────────────────────────────────────────────────────
+    kalshi_api_key: str = ""      # KALSHI_API_KEY — required for market data
+    kalshi_api_secret: str = ""   # KALSHI_API_SECRET — reserved for trading
+    kalshi_enabled: bool = True   # KALSHI_ENABLED — set false to disable entirely
+
+    # ── Cross-platform arbitrage ──────────────────────────────────────────────
+    arb_min_roi: float = 0.01        # ARB_MIN_ROI — min ROI for true arb (default 1%)
+    arb_soft_min_edge: float = 0.08  # ARB_SOFT_MIN_EDGE — gap threshold for soft arb
+
     @classmethod
     def load(cls) -> Config:
         load_dotenv()
@@ -140,4 +152,10 @@ class Config:
             pinnacle_username=opt_str("PINNACLE_USERNAME", ""),
             pinnacle_password=opt_str("PINNACLE_PASSWORD", ""),
             backtest_min_score=opt_float("BACKTEST_MIN_SCORE", 50.0),
+            min_arb_profit_pct=opt_float("MIN_ARB_PROFIT_PCT", 0.005),
+            kalshi_api_key=opt_str("KALSHI_API_KEY", ""),
+            kalshi_api_secret=opt_str("KALSHI_API_SECRET", ""),
+            kalshi_enabled=opt_bool("KALSHI_ENABLED", True),
+            arb_min_roi=opt_float("ARB_MIN_ROI", 0.01),
+            arb_soft_min_edge=opt_float("ARB_SOFT_MIN_EDGE", 0.08),
         )
