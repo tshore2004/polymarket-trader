@@ -1322,7 +1322,7 @@
                   </div>
 
                   <!-- Calculator results -->
-                  <div x-data="{ c: calcArb(opp) }" x-show="c" class="border-t border-green-900/60 pt-3">
+                  <div x-data="{ get c() { return calcArb(opp); } }" x-show="c" class="border-t border-green-900/60 pt-3">
                     <div class="flex flex-wrap items-center gap-2">
                       <!-- Poly leg -->
                       <div class="flex-1 min-w-28 bg-gray-950/60 rounded-lg p-3 text-center border border-cyan-900/40">
@@ -1352,7 +1352,7 @@
                     </div>
                   </div>
                   <!-- Prompt to enter balance -->
-                  <div x-data="{ c: calcArb(opp) }" x-show="!c && (arbPolyBal <= 0 || !arbPolyBal) && (arbKalshiBal <= 0 || !arbKalshiBal)"
+                  <div x-data="{ get c() { return calcArb(opp); } }" x-show="!c && (arbPolyBal <= 0 || !arbPolyBal) && (arbKalshiBal <= 0 || !arbKalshiBal)"
                        class="border-t border-green-900/60 pt-3 text-xs text-gray-600 text-center">
                     Enter your account balances above to see bet sizes and profit.
                   </div>
