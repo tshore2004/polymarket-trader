@@ -80,6 +80,9 @@ class Config:
     # ── Cross-platform arbitrage ──────────────────────────────────────────────
     arb_min_roi: float = 0.01        # ARB_MIN_ROI — min ROI for true arb (default 1%)
     arb_soft_min_edge: float = 0.08  # ARB_SOFT_MIN_EDGE — gap threshold for soft arb
+    arb_scan_interval: int = 1800    # ARB_SCAN_INTERVAL — full-universe scan interval (s)
+    arb_match_threshold: float = 0.45  # ARB_MATCH_THRESHOLD — Jaccard similarity cutoff
+    arb_daily_min_gap: float = 0.03  # ARB_DAILY_MIN_GAP — min |roi_pct|% to show in daily
 
     @classmethod
     def load(cls) -> Config:
@@ -158,4 +161,7 @@ class Config:
             kalshi_enabled=opt_bool("KALSHI_ENABLED", True),
             arb_min_roi=opt_float("ARB_MIN_ROI", 0.01),
             arb_soft_min_edge=opt_float("ARB_SOFT_MIN_EDGE", 0.08),
+            arb_scan_interval=opt_int("ARB_SCAN_INTERVAL", 1800),
+            arb_match_threshold=opt_float("ARB_MATCH_THRESHOLD", 0.45),
+            arb_daily_min_gap=opt_float("ARB_DAILY_MIN_GAP", 0.03),
         )
