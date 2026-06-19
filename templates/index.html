@@ -1247,18 +1247,34 @@
 
         <!-- ═══════════════════ ARBITRAGE TAB ═══════════════════ -->
         <div x-show="activeTab === 'arbitrage'" x-cloak>
-          <div class="flex items-center justify-between mb-4">
+          <!-- ── Header + scan status ── -->
+          <div class="flex items-start justify-between mb-4 gap-4">
             <div>
               <h2 class="text-xl font-bold text-white">Cross-Platform Arbitrage</h2>
-              <p class="text-sm text-gray-500 mt-0.5">Price discrepancies between Polymarket and Kalshi</p>
+              <p class="text-sm text-gray-500 mt-0.5">Full-universe scan of Polymarket vs Kalshi</p>
+              <div class="flex items-center gap-3 mt-1.5 text-xs text-gray-600">
+                <span x-show="arbState.last_scan_at">
+                  Last scan: <span x-text="arbState.last_scan_at ? new Date(arbState.last_scan_at).toLocaleTimeString() : '—'"></span>
+                  (<span x-text="(arbState.poly_count||0) + ' Poly · ' + (arbState.kalshi_count||0) + ' Kalshi'"></span>)
+                </span>
+                <span x-show="!arbState.last_scan_at" class="text-yellow-600">No scan yet — click Scan All Markets</span>
+                <span x-show="arbState.error" class="text-red-500" x-text="'Error: ' + arbState.error"></span>
+              </div>
             </div>
-            <button @click="fetchArbitrageOpportunities()" class="px-3 py-1.5 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-white transition-colors">
-              Refresh
-            </button>
+            <div class="flex gap-2 flex-shrink-0">
+              <button @click="triggerArbScan()" :disabled="arbScanning"
+                      class="px-3 py-1.5 text-sm rounded-lg bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50 text-white transition-colors flex items-center gap-1.5">
+                <svg x-show="arbScanning" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                <span x-text="arbScanning ? 'Scanning…' : 'Scan All Markets'"></span>
+              </button>
+              <button @click="fetchArbitrageOpportunities()" class="px-3 py-1.5 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-white transition-colors">
+                Refresh
+              </button>
+            </div>
           </div>
 
           <!-- ── Balance Calculator ── -->
-          <div class="mb-6 bg-gray-900 border border-gray-800 rounded-xl p-4">
+          <div class="mb-4 bg-gray-900 border border-gray-800 rounded-xl p-4">
             <div class="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Arbitrage Calculator</div>
             <div class="flex flex-wrap gap-4 items-end">
               <div>
@@ -1274,17 +1290,79 @@
                        class="w-36 text-sm bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-gray-200 focus:border-indigo-600 focus:outline-none">
               </div>
               <div class="text-xs text-gray-600 pb-2 leading-relaxed max-w-xs">
-                Enter one or both balances. For each TRUE_ARB below, we'll show the optimal bet sizes and guaranteed profit.
+                Enter one or both balances. For each TRUE_ARB, we'll show optimal bet sizes and guaranteed profit.
               </div>
             </div>
           </div>
 
-          <div x-show="arbOpportunities.length === 0" class="text-center py-16">
+          <!-- ── Filters ── -->
+          <div class="flex flex-wrap gap-3 mb-5">
+            <div class="flex items-center gap-1.5">
+              <span class="text-xs text-gray-600 font-medium">Time:</span>
+              <template x-for="[val, label] in [['all','All'],['today','Today (≤48h)'],['week','This Week']]" :key="val">
+                <button @click="arbTimeFilter = val"
+                        :class="arbTimeFilter === val ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'"
+                        class="px-2.5 py-1 text-xs rounded-lg transition-colors" x-text="label"></button>
+              </template>
+            </div>
+            <div class="flex items-center gap-1.5 ml-2">
+              <span class="text-xs text-gray-600 font-medium">Min gap:</span>
+              <template x-for="[val, label] in [['any','Any'],[3,'>3%'],[5,'>5%'],[10,'>10%']]" :key="val">
+                <button @click="arbMinGap = val"
+                        :class="arbMinGap == val ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'"
+                        class="px-2.5 py-1 text-xs rounded-lg transition-colors" x-text="label"></button>
+              </template>
+            </div>
+          </div>
+
+          <!-- ── Daily Opportunities (Tonight / Tomorrow ≥3%) ── -->
+          <div x-show="dailyArb.length > 0" class="mb-6">
+            <div class="flex items-center gap-2 mb-3">
+              <div class="w-2 h-2 rounded-full bg-orange-400 animate-pulse"></div>
+              <h3 class="text-orange-400 font-semibold text-sm uppercase tracking-wider">Daily Opportunities</h3>
+              <span class="text-xs text-orange-700 ml-1">Resolving tonight or tomorrow · ≥3% gap</span>
+            </div>
+            <div class="flex gap-3 overflow-x-auto pb-2">
+              <template x-for="(opp, i) in dailyArb" :key="'daily-' + i">
+                <div class="flex-shrink-0 w-72 rounded-xl p-3 border"
+                     :class="opp.arb_type === 'TRUE_ARB' ? 'bg-green-950 border-green-700' : 'bg-yellow-950 border-yellow-700'">
+                  <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold px-1.5 py-0.5 rounded"
+                          :class="opp.arb_type === 'TRUE_ARB' ? 'bg-green-800 text-green-300' : 'bg-yellow-800 text-yellow-300'"
+                          x-text="opp.arb_type === 'TRUE_ARB' ? 'TRUE ARB' : 'SOFT ARB'"></span>
+                    <span class="text-xs px-1.5 py-0.5 rounded font-semibold"
+                          :class="(opp.time_category==='tonight') ? 'bg-red-900 text-red-300' : 'bg-orange-900 text-orange-300'"
+                          x-text="opp.time_category === 'tonight' ? 'Tonight' : 'Tomorrow'"></span>
+                  </div>
+                  <div class="text-white text-sm font-medium line-clamp-2 mb-2" x-text="opp.question"></div>
+                  <div class="flex justify-between items-end">
+                    <div class="text-xs text-gray-500">
+                      <div><span class="text-cyan-400">POLY</span> <span x-text="opp.poly_action + ' @ ' + (opp.poly_price*100).toFixed(1) + '¢'"></span></div>
+                      <div><span class="text-indigo-400">KALSHI</span> <span x-text="opp.kalshi_action + ' @ ' + (opp.kalshi_price*100).toFixed(1) + '¢'"></span></div>
+                    </div>
+                    <div class="text-right">
+                      <div class="font-bold text-lg"
+                           :class="opp.arb_type === 'TRUE_ARB' ? 'text-green-400' : 'text-yellow-400'"
+                           x-text="(opp.arb_type === 'TRUE_ARB' ? '+' : '') + Math.abs(opp.roi_pct).toFixed(1) + '%'"></div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <div x-show="arbOpportunities.length === 0 && !arbScanning" class="text-center py-16">
             <div class="w-14 h-14 rounded-2xl bg-gray-900 border border-gray-700 flex items-center justify-center mx-auto mb-4">
               <svg class="w-7 h-7 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
             </div>
             <div class="text-gray-400 font-semibold">No Arbitrage Opportunities Found</div>
-            <div class="text-gray-600 text-sm mt-1">Run a Polymarket scan and a Kalshi scan so both sides have markets to compare, then hit Refresh.</div>
+            <div class="text-gray-600 text-sm mt-1">Click "Scan All Markets" to search the full universe of open markets on both platforms.</div>
+          </div>
+
+          <div x-show="arbScanning && arbOpportunities.length === 0" class="text-center py-16">
+            <svg class="w-10 h-10 animate-spin text-indigo-500 mx-auto mb-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+            <div class="text-gray-400 font-semibold">Scanning all open markets…</div>
+            <div class="text-gray-600 text-sm mt-1">Fetching up to 2,000 Polymarket and 500 Kalshi markets. This takes about 30–60 seconds.</div>
           </div>
 
           <!-- True Arb section -->
@@ -1293,13 +1371,24 @@
               <div class="w-2 h-2 rounded-full bg-green-400"></div>
               <h3 class="text-green-400 font-semibold text-sm uppercase tracking-wider">True Arbitrage</h3>
               <span class="text-xs text-green-600 ml-1">Risk-free profit — buy both sides simultaneously</span>
+              <span class="ml-auto text-xs text-gray-600" x-text="trueArbCount + ' found'"></span>
             </div>
             <div class="grid gap-4">
-              <template x-for="(opp, i) in arbOpportunities.filter(o => o.arb_type === 'TRUE_ARB')" :key="i">
+              <template x-for="(opp, i) in filteredArb.filter(o => o.arb_type === 'TRUE_ARB')" :key="i">
                 <div class="bg-green-950 border border-green-800 rounded-xl p-4">
                   <!-- Question + ROI header -->
                   <div class="flex items-start justify-between gap-4 mb-3">
                     <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2 mb-1.5">
+                        <span x-show="opp.time_category" class="text-xs px-1.5 py-0.5 rounded font-semibold"
+                              :class="{
+                                'bg-red-900 text-red-300': opp.time_category === 'tonight',
+                                'bg-orange-900 text-orange-300': opp.time_category === 'tomorrow',
+                                'bg-blue-900 text-blue-300': opp.time_category === 'this_week',
+                                'bg-gray-800 text-gray-400': !['tonight','tomorrow','this_week'].includes(opp.time_category)
+                              }"
+                              x-text="{tonight:'Tonight',tomorrow:'Tomorrow',this_week:'This Week',this_month:'This Month',later:'Later',ongoing:'Ongoing'}[opp.time_category] || opp.time_category"></span>
+                      </div>
                       <div class="text-white font-medium line-clamp-2 mb-2" x-text="opp.question"></div>
                       <div class="flex flex-wrap gap-3 text-sm">
                         <div class="flex items-center gap-1.5">
@@ -1366,13 +1455,24 @@
             <div class="flex items-center gap-2 mb-3">
               <div class="w-2 h-2 rounded-full bg-yellow-400"></div>
               <h3 class="text-yellow-400 font-semibold text-sm uppercase tracking-wider">Mispricing Alerts</h3>
-              <span class="text-xs text-yellow-600 ml-1">Significant price gap — no guarantee, but one platform is cheaper</span>
+              <span class="text-xs text-yellow-600 ml-1">Significant price gap — one platform is cheaper</span>
+              <span class="ml-auto text-xs text-gray-600" x-text="softArbCount + ' found'"></span>
             </div>
             <div class="grid gap-3">
-              <template x-for="(opp, i) in arbOpportunities.filter(o => o.arb_type === 'SOFT_ARB')" :key="i">
+              <template x-for="(opp, i) in filteredArb.filter(o => o.arb_type === 'SOFT_ARB')" :key="i">
                 <div class="bg-yellow-950 border border-yellow-800 rounded-xl p-4">
                   <div class="flex items-start justify-between gap-4">
                     <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2 mb-1.5">
+                        <span x-show="opp.time_category" class="text-xs px-1.5 py-0.5 rounded font-semibold"
+                              :class="{
+                                'bg-red-900 text-red-300': opp.time_category === 'tonight',
+                                'bg-orange-900 text-orange-300': opp.time_category === 'tomorrow',
+                                'bg-blue-900 text-blue-300': opp.time_category === 'this_week',
+                                'bg-gray-800 text-gray-400': !['tonight','tomorrow','this_week'].includes(opp.time_category)
+                              }"
+                              x-text="{tonight:'Tonight',tomorrow:'Tomorrow',this_week:'This Week',this_month:'This Month',later:'Later',ongoing:'Ongoing'}[opp.time_category] || opp.time_category"></span>
+                      </div>
                       <div class="text-white font-medium line-clamp-2 mb-2" x-text="opp.question"></div>
                       <div class="flex flex-wrap gap-4 text-sm">
                         <div class="flex items-center gap-1.5">
@@ -1553,6 +1653,10 @@
         arbOpportunities: [],
         arbPolyBal: null,
         arbKalshiBal: null,
+        arbState: { state: 'idle', poly_count: 0, kalshi_count: 0, last_scan_at: null, scan_duration_s: null, error: null },
+        arbTimeFilter: 'all',
+        arbMinGap: 'any',
+        arbScanning: false,
         kalshiState: { state: 'idle', has_api_key: false, markets_loaded: 0, signal_count: 0, enabled: true },
         loadingKalshi: false,
         loadingArb: false,
@@ -1615,8 +1719,30 @@
           });
         },
 
-        get trueArbCount() { return this.arbOpportunities.filter(o => o.arb_type === 'TRUE_ARB').length; },
-        get softArbCount() { return this.arbOpportunities.filter(o => o.arb_type === 'SOFT_ARB').length; },
+        get filteredArb() {
+          return this.arbOpportunities.filter(o => {
+            // time filter
+            if (this.arbTimeFilter !== 'all') {
+              const tc = o.time_category || '';
+              if (this.arbTimeFilter === 'today' && !['tonight','tomorrow'].includes(tc)) return false;
+              if (this.arbTimeFilter === 'week' && !['tonight','tomorrow','this_week'].includes(tc)) return false;
+            }
+            // gap filter
+            const gap = Math.abs(o.roi_pct);
+            if (this.arbMinGap === '3') return gap >= 3;
+            if (this.arbMinGap === '5') return gap >= 5;
+            if (this.arbMinGap === '10') return gap >= 10;
+            return true;
+          });
+        },
+        get dailyArb() {
+          return this.arbOpportunities.filter(o =>
+            ['tonight', 'tomorrow'].includes(o.time_category || '') &&
+            Math.abs(o.roi_pct) >= 3
+          );
+        },
+        get trueArbCount() { return this.filteredArb.filter(o => o.arb_type === 'TRUE_ARB').length; },
+        get softArbCount() { return this.filteredArb.filter(o => o.arb_type === 'SOFT_ARB').length; },
         get kalshiMovers() { return [...this.kalshiSignals].sort((a, b) => (b.market.volume || 0) - (a.market.volume || 0)); },
 
         fmtVol(v) {
@@ -1837,9 +1963,28 @@
         async fetchArbitrageOpportunities() {
           this.loadingArb = true;
           try {
-            const r = await fetch('/api/arbitrage');
+            const [r, rs] = await Promise.all([
+              fetch('/api/arbitrage'),
+              fetch('/api/arbitrage/state'),
+            ]);
             this.arbOpportunities = await r.json();
+            this.arbState = await rs.json();
           } catch (_) {} finally { this.loadingArb = false; }
+        },
+
+        async triggerArbScan() {
+          this.arbScanning = true;
+          try {
+            await fetch('/api/arbitrage/scan', { method: 'POST' });
+            // Poll until state leaves scanning
+            for (let i = 0; i < 120; i++) {
+              await new Promise(r => setTimeout(r, 2000));
+              const rs = await fetch('/api/arbitrage/state');
+              this.arbState = await rs.json();
+              if (this.arbState.state !== 'scanning') break;
+            }
+            await this.fetchArbitrageOpportunities();
+          } catch (_) {} finally { this.arbScanning = false; }
         },
 
         async triggerKalshiScan() {

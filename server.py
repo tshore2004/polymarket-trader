@@ -11,9 +11,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from config import Config
-from core.arbitrage import CrossPlatformArbScanner
 from core.backtest import SignalLogger, ResolutionPoller
 from core.executor import TradeExecutor
+from core.full_arb_scanner import FullArbScanner
 from core.kalshi_scanner import KalshiScanner
 from core.scanner import BackgroundScanner
 from core.signal import SignalEngine
@@ -23,7 +23,7 @@ from utils.models import Side
 templates = Jinja2Templates(directory="templates")
 scanner: BackgroundScanner | None = None
 kalshi_scanner: KalshiScanner | None = None
-arb_scanner: CrossPlatformArbScanner | None = None
+full_arb_scanner: FullArbScanner | None = None
 starred_store: StarredTraderStore | None = None
 signal_logger: SignalLogger | None = None
 resolution_poller: ResolutionPoller | None = None
@@ -45,7 +45,7 @@ def _jsonify(obj: Any) -> Any:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scanner, kalshi_scanner, arb_scanner, starred_store, signal_logger, resolution_poller
+    global scanner, kalshi_scanner, full_arb_scanner, starred_store, signal_logger, resolution_poller
     config = Config.load()
     engine = SignalEngine(config)
     executor = TradeExecutor(config)
@@ -67,11 +67,13 @@ async def lifespan(app: FastAPI):
     kalshi_scanner = KalshiScanner(config)
     kalshi_scanner.start()
 
-    arb_scanner = CrossPlatformArbScanner(config)
+    full_arb_scanner = FullArbScanner(config)
+    full_arb_scanner.start()
 
     yield
     scanner.stop()
     kalshi_scanner.stop()
+    full_arb_scanner.stop()
     resolution_poller.stop()
 
 
@@ -129,7 +131,6 @@ async def api_picks():
     active_picks = [p for p in snap.picks
                     if p.market.time_category != "past" and not p.market.closed]
     picks_raw = _jsonify(active_picks)
-    # Build trader lookup for quality info
     trader_lookup = {t.address: t for t in snap.traders}
     for raw, pick in zip(picks_raw, active_picks):
         raw["dominant_side"] = pick.dominant_side.value
@@ -156,7 +157,6 @@ async def api_picks():
             if dominant_tok and dominant_tok.outcome.lower() not in ("yes", "no", "1", "0", "")
             else pick.dominant_side.value
         )
-        # Enrich stakes with trader quality data
         for side_key in ("yes_stakes", "no_stakes"):
             if side_key in raw:
                 for stake in raw[side_key]:
@@ -174,7 +174,6 @@ async def api_picks():
 async def api_leaderboard():
     snap = scanner.get_snapshot()
     traders = _jsonify(snap.traders)
-    # Enrich with quality fields not in dataclass asdict
     for raw, t in zip(traders, snap.traders):
         raw["consistency_grade"] = t.consistency_grade
         raw["profit_per_trade"] = round(t.profit_per_trade, 2)
@@ -226,7 +225,6 @@ async def api_set_mode(mode: str = Query(...)):
 
 @app.get("/api/starred")
 async def api_starred():
-    """List all starred traders with their leaderboard stats if available."""
     snap = scanner.get_snapshot()
     trader_lookup = {t.address.lower(): t for t in snap.traders}
     starred = starred_store.get_all()
@@ -263,7 +261,6 @@ async def api_starred():
 
 @app.post("/api/star")
 async def api_star(address: str = Query(...), name: str = Query(default="")):
-    """Star a trader by address."""
     st = starred_store.star(address, name)
     return JSONResponse({
         "starred": True,
@@ -275,12 +272,10 @@ async def api_star(address: str = Query(...), name: str = Query(default="")):
 
 @app.get("/api/trader/{address}")
 async def api_trader_profile(address: str):
-    """Trader profile: stats, current positions, and activity history for charting."""
     snap = scanner.get_snapshot()
     trader_lookup = {t.address.lower(): t for t in snap.traders}
     t = trader_lookup.get(address.lower())
 
-    # Basic stats
     profile: dict = {}
     if t:
         profile = {
@@ -302,13 +297,12 @@ async def api_trader_profile(address: str):
     else:
         profile = {"address": address, "name": "", "profit": 0, "score": 0}
 
-    # Current positions from cached data
     engine = scanner._engine
     positions_raw = engine._lb._positions.get(address, [])
     positions = []
     for pos in positions_raw:
         if pos.cur_price in (0.0, 1.0):
-            continue  # skip resolved
+            continue
         positions.append({
             "market_id": pos.market_id,
             "title": pos.title,
@@ -320,7 +314,6 @@ async def api_trader_profile(address: str):
             "pnl": round((pos.cur_price - pos.avg_price) * pos.size, 2) if pos.avg_price > 0 else 0,
         })
 
-    # Activity history for chart — use cached data from scan enrichment
     activity = engine._lb._activity_cache.get(address, [])
 
     return JSONResponse({
@@ -332,7 +325,6 @@ async def api_trader_profile(address: str):
 
 @app.post("/api/unstar")
 async def api_unstar(address: str = Query(...)):
-    """Unstar a trader."""
     removed = starred_store.unstar(address)
     return JSONResponse({
         "removed": removed,
@@ -341,38 +333,28 @@ async def api_unstar(address: str = Query(...)):
     })
 
 
-# ── Backtest / Performance Tracking ──────────────────────────────────────────
-
-
 @app.get("/api/backtest/performance")
 async def api_backtest_performance():
-    """Aggregate performance stats: win rate, P&L, factor analysis."""
     return JSONResponse(signal_logger.get_performance())
 
 
 @app.get("/api/backtest/picks")
 async def api_backtest_picks(limit: int = Query(default=50)):
-    """Recent tracked picks with resolution status."""
     return JSONResponse(signal_logger.get_recent_picks(limit=limit))
 
 
 @app.get("/api/backtest/unresolved")
 async def api_backtest_unresolved():
-    """All picks still awaiting resolution."""
     return JSONResponse(signal_logger.get_unresolved())
 
 
 @app.post("/api/backtest/poll")
 async def api_backtest_poll():
-    """Manually trigger a resolution poll cycle."""
     resolved = resolution_poller.poll_once()
     return JSONResponse({
         "resolved_this_cycle": resolved,
         "message": f"Resolved {resolved} pick(s).",
     })
-
-
-# ── Kalshi endpoints ──────────────────────────────────────────────────────────
 
 
 @app.get("/api/kalshi/state")
@@ -393,7 +375,11 @@ async def api_kalshi_state():
 @app.get("/api/kalshi/signals")
 async def api_kalshi_signals():
     snap = kalshi_scanner.get_snapshot()
-    return JSONResponse(_jsonify(snap.signals))
+    signals_raw = _jsonify(snap.signals)
+    for raw, sig in zip(signals_raw, snap.signals):
+        raw["market"]["time_category"] = sig.market.time_category
+        raw["market"]["volume"] = sig.market.volume
+    return JSONResponse(signals_raw)
 
 
 @app.post("/api/kalshi/scan")
@@ -405,34 +391,39 @@ async def api_kalshi_scan():
     })
 
 
-# ── Cross-platform arbitrage endpoint ─────────────────────────────────────────
-
-
 @app.get("/api/arbitrage")
 async def api_arbitrage():
-    poly_snap = scanner.get_snapshot()
-    kalshi_snap = kalshi_scanner.get_snapshot()
+    snap = full_arb_scanner.get_snapshot()
+    return JSONResponse(_jsonify(snap.opportunities))
 
-    # Gather Polymarket markets from current signals + picks
-    poly_markets = list({
-        s.market.condition_id: s.market
-        for s in poly_snap.signals
-    }.values())
-    # Also include markets from picks
-    for p in poly_snap.picks:
-        if p.market.condition_id not in {m.condition_id for m in poly_markets}:
-            poly_markets.append(p.market)
 
-    kalshi_markets = [sig.market for sig in kalshi_snap.signals]
+@app.get("/api/arbitrage/state")
+async def api_arbitrage_state():
+    snap = full_arb_scanner.get_snapshot()
+    return JSONResponse({
+        "state": snap.state.value,
+        "opportunity_count": len(snap.opportunities),
+        "poly_count": snap.poly_count,
+        "kalshi_count": snap.kalshi_count,
+        "last_scan_at": snap.last_scan_at.isoformat() if snap.last_scan_at else None,
+        "scan_duration_s": snap.scan_duration_s,
+        "error": snap.error,
+    })
 
-    opportunities = arb_scanner.find_opportunities(poly_markets, kalshi_markets)
-    return JSONResponse(_jsonify(opportunities))
+
+@app.post("/api/arbitrage/scan")
+async def api_arbitrage_scan():
+    triggered = full_arb_scanner.trigger_scan()
+    return JSONResponse({
+        "triggered": triggered,
+        "message": "Full arb scan started." if triggered else "Scan already in progress.",
+    })
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    p = argparse.ArgumentParser(description="OddsEdge — prediction market scanner")
+    p = argparse.ArgumentParser(description="OddsEdge -- prediction market scanner")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args()

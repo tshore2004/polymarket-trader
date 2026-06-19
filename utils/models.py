@@ -361,9 +361,9 @@ class KalshiMarket:
     ticker: str
     title: str
     category: str
-    yes_price: float       # 0.0–1.0 (converted from Kalshi's 0–99 cents)
+    yes_price: float       # 0.0–1.0 (from Kalshi's *_dollars fields)
     no_price: float
-    volume: int = 0
+    volume: float = 0.0    # volume_fp — fractional contract volume
     close_time: Optional[datetime] = None
     tags: list[str] = field(default_factory=list)
 
@@ -440,3 +440,5 @@ class ArbitrageOpportunity:
     roi_pct: float             # expected return (positive = true arb)
     arb_type: str              # "TRUE_ARB" or "SOFT_ARB"
     match_confidence: float    # 0.0–1.0 confidence the markets refer to same event
+    poly_end_date: Optional[datetime] = None  # Polymarket end date for time filtering
+    time_category: str = ""   # tonight/tomorrow/this_week/this_month/later/ongoing

@@ -6,6 +6,7 @@
 from __future__ import annotations
 import logging
 import re
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
@@ -23,7 +24,7 @@ _STOPWORDS = {
 }
 
 
-# ── Intra-market arb (YES_ask + NO_ask < 1) ──────────────────────────────────
+# -- Intra-market arb (YES_ask + NO_ask < 1) --
 
 class IntraMarketArbDetector:
     """Detects intra-market arbitrage: YES_ask + NO_ask < 1 - fee."""
@@ -90,7 +91,7 @@ class IntraMarketArbDetector:
         return min(50.0, opp.net_profit_pct / 0.05 * 50)
 
 
-# ── Cross-platform arb (Polymarket vs Kalshi) ─────────────────────────────────
+# -- Cross-platform arb (Polymarket vs Kalshi) --
 
 def _keywords(text: str) -> set[str]:
     tokens = re.findall(r"[a-z]{3,}", text.lower())
@@ -110,6 +111,8 @@ def _match_confidence(poly_q: str, kalshi_q: str) -> float:
 class CrossPlatformArbScanner:
     """Finds price discrepancies between matched Polymarket and Kalshi markets."""
 
+    MATCH_THRESHOLD = 0.45  # lowered from 0.55 for broader coverage
+
     def __init__(self, config: Config) -> None:
         self._config = config
 
@@ -118,6 +121,8 @@ class CrossPlatformArbScanner:
         poly_markets: list[Market],
         kalshi_markets: list[KalshiMarket],
     ) -> list[ArbitrageOpportunity]:
+        threshold = getattr(self._config, "arb_match_threshold", self.MATCH_THRESHOLD)
+        index = self._build_poly_index(poly_markets)
         opportunities: list[ArbitrageOpportunity] = []
 
         for km in kalshi_markets:
@@ -126,8 +131,8 @@ class CrossPlatformArbScanner:
             if km.yes_price <= 0 or km.no_price <= 0:
                 continue
 
-            best_match, best_conf = self._best_poly_match(km, poly_markets)
-            if best_match is None or best_conf < 0.75:
+            best_match, best_conf = self._best_poly_match_indexed(km, index)
+            if best_match is None or best_conf < threshold:
                 continue
 
             yes_tok = best_match.yes_token
@@ -140,8 +145,9 @@ class CrossPlatformArbScanner:
             kalshi_yes = km.yes_price
             kalshi_no = km.no_price
             fee = self._config.fee_rate
+            end_date = best_match.end_date
+            time_cat = best_match.time_category
 
-            # True arb: buy YES on one exchange, NO on the other
             arb_yes_poly = poly_yes + kalshi_no
             arb_yes_kalshi = kalshi_yes + poly_no
 
@@ -159,6 +165,8 @@ class CrossPlatformArbScanner:
                         roi_pct=round(roi * 100, 2),
                         arb_type="TRUE_ARB",
                         match_confidence=round(best_conf, 3),
+                        poly_end_date=end_date,
+                        time_category=time_cat,
                     ))
                     continue
 
@@ -176,10 +184,11 @@ class CrossPlatformArbScanner:
                         roi_pct=round(roi * 100, 2),
                         arb_type="TRUE_ARB",
                         match_confidence=round(best_conf, 3),
+                        poly_end_date=end_date,
+                        time_category=time_cat,
                     ))
                     continue
 
-            # Soft arb: same-direction price gap
             yes_gap = abs(poly_yes - kalshi_yes)
             if yes_gap >= self._config.arb_soft_min_edge:
                 cheaper_on_poly = poly_yes < kalshi_yes
@@ -194,6 +203,8 @@ class CrossPlatformArbScanner:
                     roi_pct=round(-yes_gap * 100, 2),
                     arb_type="SOFT_ARB",
                     match_confidence=round(best_conf, 3),
+                    poly_end_date=end_date,
+                    time_category=time_cat,
                 ))
 
         true_arbs = sorted(
@@ -206,12 +217,25 @@ class CrossPlatformArbScanner:
         )
         return true_arbs + soft_arbs
 
-    def _best_poly_match(
-        self, km: KalshiMarket, poly_markets: list[Market]
+    def _build_poly_index(self, poly_markets: list[Market]) -> dict[str, list[Market]]:
+        """Build keyword → [Market] inverted index for O(k) candidate lookup."""
+        index: dict[str, list[Market]] = defaultdict(list)
+        for pm in poly_markets:
+            for kw in _keywords(pm.question):
+                index[kw].append(pm)
+        return index
+
+    def _best_poly_match_indexed(
+        self, km: KalshiMarket, index: dict[str, list[Market]]
     ) -> tuple[Optional[Market], float]:
+        """Find best Poly match using inverted index — only computes Jaccard on candidates."""
+        candidates: dict[str, Market] = {}
+        for kw in _keywords(km.title):
+            for pm in index.get(kw, []):
+                candidates[pm.condition_id] = pm
         best: Optional[Market] = None
         best_conf = 0.0
-        for pm in poly_markets:
+        for pm in candidates.values():
             conf = _match_confidence(pm.question, km.title)
             if conf > best_conf:
                 best_conf = conf
