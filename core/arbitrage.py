@@ -135,6 +135,11 @@ class CrossPlatformArbScanner:
             if best_match is None or best_conf < threshold:
                 continue
 
+            if best_match.closed or not best_match.active:
+                continue
+            if best_match.time_category == "past":
+                continue
+
             yes_tok = best_match.yes_token
             no_tok = best_match.no_token
             if not yes_tok or not no_tok:
@@ -142,6 +147,9 @@ class CrossPlatformArbScanner:
 
             poly_yes = yes_tok.price
             poly_no = no_tok.price
+            if poly_yes <= 0 or poly_no <= 0:
+                continue
+
             kalshi_yes = km.yes_price
             kalshi_no = km.no_price
             fee = self._config.fee_rate
