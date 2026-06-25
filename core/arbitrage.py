@@ -1265,10 +1265,35 @@ class CrossPlatformArbScanner:
                 no_kw = no_name.split()[-1]   # e.g. "tigers", "mariners"
                 strict = [pm for pm in candidates if no_kw in pm.question.lower()]
                 if strict:
-                    candidates = strict  # Only narrow on NO team if matches exist
+                    candidates = strict
+                else:
+                    # Opponent is known from the ticker but appears in no Poly market.
+                    # Falling back to any YES-team market here produces false arbs
+                    # (e.g. CINPIT matched to "Brewers vs Reds" when no "Pirates" Poly
+                    # market exists today).  Return no match instead.
+                    return None, 0.0
 
         if not candidates:
             return None, 0.0
+
+        # For non-MLB sports with a "vs" title (e.g. KXCFLGAME), extract the opponent
+        # city and require it to appear in the Poly question.  Without this, a CFL
+        # "Toronto vs Saskatchewan" market matches to "Blue Jays vs X" because
+        # "toronto" is in the token city index for baseball markets too.
+        if not mlb_codes:
+            kalshi_sides = _extract_vs_sides(km.title)
+            if kalshi_sides:
+                no_side_city = _side_to_city(kalshi_sides[1])
+                if no_side_city and len(no_side_city) >= 3:
+                    strict_no = [
+                        pm for pm in candidates
+                        if no_side_city in pm.question.lower()
+                        or any(no_side_city in t.outcome.lower() for t in pm.tokens)
+                    ]
+                    if strict_no:
+                        candidates = strict_no
+                    else:
+                        return None, 0.0
 
         # For non-MLB abbreviated labels (e.g. "Chicago B", "Pittsburgh P"), narrow
         # candidates by the resolved team name so same-city teams aren't confused.
