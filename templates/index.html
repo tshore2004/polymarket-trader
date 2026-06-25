@@ -1976,7 +1976,17 @@
           this.arbScanning = true;
           try {
             await fetch('/api/arbitrage/scan', { method: 'POST' });
-            // Poll until state leaves scanning
+            // Wait up to 6s for the background thread to enter the scanning state before
+            // we start polling for completion. Without this guard the first poll fires
+            // while state is still 'idle' (scan hasn't started yet) and the loop exits
+            // immediately, showing the stale last_scan_at time.
+            for (let i = 0; i < 3; i++) {
+              await new Promise(r => setTimeout(r, 2000));
+              const rs = await fetch('/api/arbitrage/state');
+              this.arbState = await rs.json();
+              if (this.arbState.state === 'scanning') break;
+            }
+            // Now poll until scan finishes
             for (let i = 0; i < 120; i++) {
               await new Promise(r => setTimeout(r, 2000));
               const rs = await fetch('/api/arbitrage/state');
@@ -2021,6 +2031,7 @@
           if (this.activeTab === 'signals') await this.fetchSignals();
           else if (this.activeTab === 'leaderboard') await this.fetchLeaderboard();
           else if (this.activeTab === 'picks') await this.fetchPicks();
+          else if (this.activeTab === 'arbitrage') await this.silentRefreshArb();
           else await this.fetchSignals();
         },
 

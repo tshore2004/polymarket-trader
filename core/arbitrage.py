@@ -335,7 +335,7 @@ _POLY_PROP_EXCLUSION_RE = re.compile(
     r"(spread|\bo/u\b|over/under|innings|inning|strikeout|home run|"
     r"extra innings|nrfi|run scored|run line|\bou\b|total runs|"
     r"first \d|player prop|\+\d\.5|\-\d\.5|"
-    r"end in a draw|\bdraw\b|exact score|first goal scorer|"
+    r"exact score|first goal scorer|"
     r"both teams|btts|total goals?|clean sheet|first goal|anytime|"
     r"corners?|yellow card|red card|to score|\d+\.?\d*\s*goals?|"
     r"wickets?|run[s]?\s+total|top\s+batter|top\s+bowler|man\s+of\s+the\s+match|"
@@ -452,9 +452,12 @@ def _sports_match_confidence(
     # Both city pairs match — base confidence 0.85
     conf = 0.85
 
-    # Date proximity: boost if within 36h, hard-reject if > 60h (2.5 days = different game
-    # in the same series; consecutive MLB/NBA games are ~24h apart so 60h gives one-game
-    # buffer while rejecting games two or more slots away).
+    # Date proximity: boost if within 36h, hard-reject if > 96h.
+    # Kalshi close_time = game start; Poly end_date = resolution, often 2-4 days later.
+    # 60h was too tight and rejected valid same-game pairs where Poly settles conservatively
+    # (e.g. NBA/NHL playoff markets set to resolve Thursday for a Tuesday game = 48-72h gap).
+    # 96h (4 days) gives enough room for conservative Poly settlement dates while still
+    # rejecting games that are genuinely in a different series slot (>4 days apart).
     if poly_end and kalshi_close:
         try:
             pe = poly_end if poly_end.tzinfo else poly_end.replace(tzinfo=timezone.utc)
@@ -462,7 +465,7 @@ def _sports_match_confidence(
             gap_h = abs((pe - kc).total_seconds()) / 3600
             if gap_h <= 36:
                 conf = 0.95
-            elif gap_h > 60:
+            elif gap_h > 96:
                 return 0.0  # dates too far apart — different game entirely
         except Exception:
             pass
@@ -813,11 +816,11 @@ class CrossPlatformArbScanner:
                 if game_dt and best_match.end_date:
                     pe = best_match.end_date if best_match.end_date.tzinfo else best_match.end_date.replace(tzinfo=timezone.utc)
                     days_after_game = (pe - game_dt).total_seconds() / 86400
-                    # Poly end_date must be on or after the game date and within 3 days.
-                    # MLB games settle 1-2 days after the game; >3 days means a different
-                    # game in the same series was matched.  Markets ending before game_dt
-                    # are for past games.
-                    if not (0 <= days_after_game <= 3):
+                    # Poly end_date must be on or after the game date and within 7 days.
+                    # MLB games settle 1-2 days after the game, but Poly markets are often
+                    # set conservatively (4-7 days out). >7 days means a different game in
+                    # the same series was matched. Markets ending before game_dt are past.
+                    if not (0 <= days_after_game <= 7):
                         _stats["skipped_mlb_date"] += 1
                         logger.debug("ARB skip [mlb_date] %s days_after_game=%.1f", km.ticker, days_after_game)
                         continue
@@ -1230,11 +1233,16 @@ class CrossPlatformArbScanner:
         for pm in poly_markets:
             if _POLY_PROP_EXCLUSION_RE.search(pm.question):
                 continue
-            yes_tok = pm.yes_token
-            if yes_tok and yes_tok.outcome and yes_tok.outcome.lower() not in ("yes", "1", "true"):
-                city = _side_to_city(yes_tok.outcome)
-                if city and len(city) >= 3:
+            # Index by city for ALL non-Yes/No outcome tokens so both teams in a
+            # "Cubs vs Mets" binary are discoverable regardless of which token is tokens[0].
+            indexed_cities: set[str] = set()
+            for tok in pm.tokens:
+                if not tok.outcome or tok.outcome.lower() in ("yes", "no", "1", "0", "true", "false"):
+                    continue
+                city = _side_to_city(tok.outcome)
+                if city and len(city) >= 3 and city not in indexed_cities:
                     index[city].append(pm)
+                    indexed_cities.add(city)
         return index
 
     def _best_sports_match_single_team(
