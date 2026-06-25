@@ -5,11 +5,13 @@ universe of open markets on both platforms and runs CrossPlatformArbScanner on t
 Results are cached in a snapshot and refreshed every arb_scan_interval seconds.
 """
 from __future__ import annotations
+import dataclasses
 import logging
 import threading
 import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed2
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -76,7 +78,6 @@ class FullArbScanner:
             return self._snapshot
 
     def _loop(self) -> None:
-        # Run immediately on first start
         self._scan_now.set()
         while not self._stop_event.is_set():
             self._scan_now.wait(timeout=self._config.arb_scan_interval)
@@ -87,19 +88,55 @@ class FullArbScanner:
 
     def _run_scan(self) -> None:
         with self._lock:
-            self._snapshot = ArbSnapshot(state=ArbScanState.SCANNING,
-                                         opportunities=self._snapshot.opportunities,
-                                         poly_count=self._snapshot.poly_count,
-                                         kalshi_count=self._snapshot.kalshi_count,
-                                         last_scan_at=self._snapshot.last_scan_at)
+            self._snapshot = ArbSnapshot(
+                state=ArbScanState.SCANNING,
+                opportunities=self._snapshot.opportunities,
+                poly_count=self._snapshot.poly_count,
+                kalshi_count=self._snapshot.kalshi_count,
+                last_scan_at=self._snapshot.last_scan_at,
+            )
         t0 = _time.monotonic()
         try:
             logger.info("FullArbScanner: fetching all open markets...")
-            poly_markets = self._poly_client.get_markets(limit=2000, active_only=True)
-            kalshi_markets = self._kalshi_client.get_markets(limit=500)
-            logger.info("FullArbScanner: poly=%d kalshi=%d — running arb scan",
-                        len(poly_markets), len(kalshi_markets))
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                # Sort by 24h volume so high-activity sports markets (MLB, World Cup, etc.)
+                # always appear in the first page rather than being buried by offset ordering.
+                poly_fut = pool.submit(
+                    self._poly_client.get_markets, 2000, True, None, "volume24hr", False
+                )
+                # Use a wide window (336h = 2 weeks) because sports moneylines on Polymarket
+                # carry settlement end dates up to 1-2 weeks out, not the actual game time.
+                # Without this, a 72h window misses tomorrow's game moneylines entirely.
+                poly_near_fut = pool.submit(self._poly_client.get_near_term_markets, 336, 500)
+                kalshi_fut = pool.submit(self._kalshi_client.get_markets, 1500)
+                # days_ahead=14 — matches the expanded Poly window above; Kalshi events with
+                # no close_time already pass the cutoff, so this is a no-op for MLB/soccer.
+                sports_fut = pool.submit(self._kalshi_client.get_sports_game_markets, 14.0, 80)
+                poly_markets = poly_fut.result()
+                poly_near = poly_near_fut.result()
+                kalshi_base = kalshi_fut.result()
+                kalshi_sports = sports_fut.result()
+
+            seen_poly: set[str] = {m.condition_id for m in poly_markets}
+            for pm in poly_near:
+                if pm.condition_id not in seen_poly:
+                    poly_markets.append(pm)
+                    seen_poly.add(pm.condition_id)
+
+            seen_tickers: set[str] = {m.ticker for m in kalshi_base}
+            for km in kalshi_sports:
+                if km.ticker not in seen_tickers:
+                    kalshi_base.append(km)
+                    seen_tickers.add(km.ticker)
+            kalshi_markets = kalshi_base
+
+            logger.info(
+                "FullArbScanner: poly=%d (incl %d near-term) kalshi=%d (incl %d sports) — running arb scan",
+                len(poly_markets), len(poly_near), len(kalshi_markets), len(kalshi_sports),
+            )
             opportunities = self._arb_scanner.find_opportunities(poly_markets, kalshi_markets)
+            opportunities = self._refresh_kalshi_prices(opportunities)
+
             duration = _time.monotonic() - t0
             logger.info("FullArbScanner: found %d opportunities in %.1fs",
                         len(opportunities), duration)
@@ -125,3 +162,87 @@ class FullArbScanner:
                     scan_duration_s=round(duration, 1),
                     error=str(exc),
                 )
+
+    def _refresh_kalshi_prices(
+        self, opportunities: list[ArbitrageOpportunity]
+    ) -> list[ArbitrageOpportunity]:
+        """Fetch live Kalshi prices for every matched ticker and update the opportunities.
+
+        Batch scan prices can be minutes stale by the time arb matching completes.
+        Re-fetches each matched ticker via the individual market endpoint (fast, accurate)
+        and recomputes roi_pct so displayed values are current.
+        """
+        if not opportunities:
+            return opportunities
+
+        tickers = list({o.kalshi_ticker for o in opportunities})
+        logger.info("FullArbScanner: refreshing live prices for %d Kalshi tickers", len(tickers))
+
+        fresh: dict[str, object] = {}
+        with ThreadPoolExecutor(max_workers=min(10, len(tickers))) as pool:
+            futures = {pool.submit(self._kalshi_client.get_market, t): t for t in tickers}
+            for fut in _as_completed2(futures):
+                try:
+                    km = fut.result()
+                    if km:
+                        fresh[km.ticker] = km
+                except Exception as exc:
+                    logger.debug("Kalshi price refresh failed: %s", exc)
+
+        fee = self._config.fee_rate
+        refreshed: list[ArbitrageOpportunity] = []
+        for opp in opportunities:
+            km = fresh.get(opp.kalshi_ticker)
+            if km is None:
+                # Individual fetch failed — still apply date-gap filter using the
+                # close_time already stored on the opportunity from the bulk scan.
+                if opp.kalshi_close_time and opp.poly_end_date:
+                    try:
+                        kc = opp.kalshi_close_time if opp.kalshi_close_time.tzinfo else opp.kalshi_close_time.replace(tzinfo=timezone.utc)
+                        pe = opp.poly_end_date if opp.poly_end_date.tzinfo else opp.poly_end_date.replace(tzinfo=timezone.utc)
+                        if abs((pe - kc).total_seconds()) > 365 * 24 * 3600:
+                            continue
+                    except Exception:
+                        pass
+                refreshed.append(opp)
+                continue
+
+            # Drop matches where Kalshi and Poly resolve > 365 days apart.
+            # The bulk scan's date-gap filter can't run when km.close_time is None
+            # (common for non-sports markets from the bulk endpoint); the individual
+            # market fetch here always provides it, so this is the definitive gate.
+            if km.close_time and opp.poly_end_date:
+                try:
+                    kc = km.close_time if km.close_time.tzinfo else km.close_time.replace(tzinfo=timezone.utc)
+                    pe = opp.poly_end_date if opp.poly_end_date.tzinfo else opp.poly_end_date.replace(tzinfo=timezone.utc)
+                    if abs((pe - kc).total_seconds()) > 365 * 24 * 3600:
+                        logger.debug("Price refresh drop [date_gap] %s gap_days=%.0f",
+                                     opp.kalshi_ticker, abs((pe - kc).total_seconds()) / 86400)
+                        continue
+                except Exception:
+                    pass
+
+            if opp.arb_type == "TRUE_ARB":
+                new_kalshi_price = km.no_price if "NO" in opp.kalshi_action else km.yes_price
+                # Poly prices from Gamma API are mid/last-trade, not executable ask prices.
+                # Add 1c conservative slippage buffer so displayed ROI reflects reality.
+                poly_exec = round(min(opp.poly_price + 0.01, 0.99), 4)
+                cost = poly_exec + new_kalshi_price
+                new_roi = round((1.0 / (cost * (1 + fee)) - 1.0) * 100, 2)
+                new_poly_price = poly_exec
+            else:
+                # Soft arb: use the Kalshi leg that matches kalshi_action.
+                # The proximity heuristic (pick YES/NO closest to stored price) is wrong:
+                # if prices move after scan time, it can silently flip to the wrong contract.
+                new_kalshi_price = km.yes_price if "YES" in opp.kalshi_action else km.no_price
+                new_roi = round(-abs(opp.poly_price - new_kalshi_price) * 100, 2)
+                new_poly_price = opp.poly_price
+
+            refreshed.append(dataclasses.replace(
+                opp,
+                poly_price=new_poly_price,
+                kalshi_price=round(new_kalshi_price, 4),
+                roi_pct=new_roi,
+            ))
+
+        return refreshed
