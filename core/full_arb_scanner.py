@@ -206,12 +206,10 @@ class FullArbScanner:
                 new_roi = round((1.0 / (cost * (1 + fee)) - 1.0) * 100, 2)
                 new_poly_price = poly_exec
             else:
-                # Soft arb: pick fresh Kalshi price closest to stored reference price.
-                # Handles both same-team (stored k_yes) and opp-team (stored k_no) variants.
-                if abs(opp.kalshi_price - km.yes_price) <= abs(opp.kalshi_price - km.no_price):
-                    new_kalshi_price = km.yes_price
-                else:
-                    new_kalshi_price = km.no_price
+                # Soft arb: use the Kalshi leg that matches kalshi_action.
+                # The proximity heuristic (pick YES/NO closest to stored price) is wrong:
+                # if prices move after scan time, it can silently flip to the wrong contract.
+                new_kalshi_price = km.yes_price if "YES" in opp.kalshi_action else km.no_price
                 new_roi = round(-abs(opp.poly_price - new_kalshi_price) * 100, 2)
                 new_poly_price = opp.poly_price
 
