@@ -11,7 +11,7 @@ import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed2
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -196,6 +196,21 @@ class FullArbScanner:
             if km is None:
                 refreshed.append(opp)
                 continue
+
+            # Drop matches where Kalshi and Poly resolve > 365 days apart.
+            # The bulk scan's date-gap filter can't run when km.close_time is None
+            # (common for non-sports markets from the bulk endpoint); the individual
+            # market fetch here always provides it, so this is the definitive gate.
+            if km.close_time and opp.poly_end_date:
+                try:
+                    kc = km.close_time if km.close_time.tzinfo else km.close_time.replace(tzinfo=timezone.utc)
+                    pe = opp.poly_end_date if opp.poly_end_date.tzinfo else opp.poly_end_date.replace(tzinfo=timezone.utc)
+                    if abs((pe - kc).total_seconds()) > 365 * 24 * 3600:
+                        logger.debug("Price refresh drop [date_gap] %s gap_days=%.0f",
+                                     opp.kalshi_ticker, abs((pe - kc).total_seconds()) / 86400)
+                        continue
+                except Exception:
+                    pass
 
             if opp.arb_type == "TRUE_ARB":
                 new_kalshi_price = km.no_price if "NO" in opp.kalshi_action else km.yes_price
