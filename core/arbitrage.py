@@ -959,30 +959,6 @@ class CrossPlatformArbScanner:
                         kalshi_outcome=kalshi_yes_label,
                     ))
 
-                # Soft arb: price gap on opposite team (previously unchecked)
-                gap_opp = abs(poly_opp - k_no)
-                if gap_opp >= self._config.arb_soft_min_edge:
-                    opp_cheaper_on_poly = poly_opp < k_no
-                    opportunities.append(ArbitrageOpportunity(
-                        question=best_match.question,
-                        poly_ticker=best_match.condition_id,
-                        kalshi_ticker=km.ticker,
-                        poly_action=(
-                            ("BUY NO" if _poly_same_is_yes else "BUY YES") if opp_cheaper_on_poly
-                            else ("BUY YES" if _poly_same_is_yes else "BUY NO")
-                        ),
-                        kalshi_action="BUY YES" if opp_cheaper_on_poly else "BUY NO",
-                        poly_price=round(poly_opp, 4),
-                        kalshi_price=round(k_no, 4),
-                        roi_pct=round(-gap_opp * 100, 2),
-                        arb_type="SOFT_ARB",
-                        match_confidence=round(best_conf, 3),
-                        poly_end_date=end_date,
-                        kalshi_close_time=km.close_time,
-                        time_category=time_cat,
-                        poly_outcome=poly_opp_label if opp_cheaper_on_poly else poly_same_label,
-                        kalshi_outcome=kalshi_yes_label,
-                    ))
             else:
                 # Non-sports or alignment failed — use original YES/NO logic
                 poly_yes = yes_tok.price
