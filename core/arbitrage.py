@@ -686,6 +686,7 @@ class CrossPlatformArbScanner:
             "skipped_alignment_failed": 0,
             "skipped_settled": 0,
             "skipped_mlb_date": 0,
+            "skipped_date_gap": 0,
             "matched_pairs": 0,
             "opportunities": 0,
         }
