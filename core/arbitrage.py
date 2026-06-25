@@ -785,6 +785,19 @@ class CrossPlatformArbScanner:
                             continue
                     except Exception:
                         pass
+                # For non-sports markets, reject if resolution dates differ by > 365 days.
+                # Catches tickers that share a name but resolve at completely different times
+                # (e.g. KXNEXTISRAELPM closing 2045 matched to a Poly market closing 2026).
+                if not is_sports and best_match.end_date and km.close_time:
+                    try:
+                        pe = best_match.end_date if best_match.end_date.tzinfo else best_match.end_date.replace(tzinfo=timezone.utc)
+                        kc = km.close_time if km.close_time.tzinfo else km.close_time.replace(tzinfo=timezone.utc)
+                        if abs((pe - kc).total_seconds()) > 365 * 24 * 3600:
+                            _stats["skipped_date_gap"] += 1
+                            logger.debug("ARB skip [date_gap] %s gap_days=%.0f", km.ticker, abs((pe - kc).total_seconds()) / 86400)
+                            continue
+                    except Exception:
+                        pass
 
             if best_match is None:
                 continue
