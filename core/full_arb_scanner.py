@@ -108,7 +108,7 @@ class FullArbScanner:
                 # carry settlement end dates up to 1-2 weeks out, not the actual game time.
                 # Without this, a 72h window misses tomorrow's game moneylines entirely.
                 poly_near_fut = pool.submit(self._poly_client.get_near_term_markets, 336, 500)
-                kalshi_fut = pool.submit(self._kalshi_client.get_markets, 500)
+                kalshi_fut = pool.submit(self._kalshi_client.get_markets, 1500)
                 # days_ahead=14 — matches the expanded Poly window above; Kalshi events with
                 # no close_time already pass the cutoff, so this is a no-op for MLB/soccer.
                 sports_fut = pool.submit(self._kalshi_client.get_sports_game_markets, 14.0, 80)
@@ -194,6 +194,16 @@ class FullArbScanner:
         for opp in opportunities:
             km = fresh.get(opp.kalshi_ticker)
             if km is None:
+                # Individual fetch failed — still apply date-gap filter using the
+                # close_time already stored on the opportunity from the bulk scan.
+                if opp.kalshi_close_time and opp.poly_end_date:
+                    try:
+                        kc = opp.kalshi_close_time if opp.kalshi_close_time.tzinfo else opp.kalshi_close_time.replace(tzinfo=timezone.utc)
+                        pe = opp.poly_end_date if opp.poly_end_date.tzinfo else opp.poly_end_date.replace(tzinfo=timezone.utc)
+                        if abs((pe - kc).total_seconds()) > 365 * 24 * 3600:
+                            continue
+                    except Exception:
+                        pass
                 refreshed.append(opp)
                 continue
 
