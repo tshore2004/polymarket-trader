@@ -366,6 +366,8 @@ class KalshiMarket:
     volume: float = 0.0    # volume_fp — fractional contract volume
     close_time: Optional[datetime] = None
     tags: list[str] = field(default_factory=list)
+    yes_sub_title: str = ""  # Kalshi YES-side label (full team name for sports)
+    no_sub_title: str = ""   # Kalshi NO-side label (opposing team)
 
     @property
     def question(self) -> str:
